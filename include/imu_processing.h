@@ -107,7 +107,7 @@ class ImuProcess {
    * @details Performs EKF measurement update step to incorporate LiDAR
    *          point association constraints.
    */
-  void UpdateStatesWithLidar(KfState* kf_state,
+  bool UpdateStatesWithLidar(KfState* kf_state,
                              const rclcpp::Time& lidar_end_time,
                              double max_solve_time);
 

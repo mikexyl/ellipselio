@@ -80,7 +80,7 @@ LidarProcess::LidarProcess(LidarParams params, float map_resolution,
   }
 
   sub_pcl_pc_ = node_->create_subscription<sensor_msgs::msg::PointCloud2>(
-      params.topic, rclcpp::SensorDataQoS(),
+      params.topic, params.reliable ? rclcpp::QoS(100).reliable() : rclcpp::QoS(rclcpp::SensorDataQoS()),
       std::bind(&LidarProcess::LidarCallback, this, std::placeholders::_1),
       lidar_opt);
 }
@@ -205,6 +205,21 @@ void LidarProcess::ClearPointCloud() {
   ClearBins();
   lidar_has_data_ = false;
   lidar_mutex_.unlock();
+}
+
+void LidarProcess::TakeResearchCloud(const rclcpp::Time& start,
+                                    const rclcpp::Time& end,
+                                    EllipseLioPointCloudPtr output) {
+  std::lock_guard<std::mutex> lock(lidar_mutex_);
+  output->clear();
+  auto stamp = [](const EllipseLioPoint& p) {
+    return rclcpp::Time(p.time_secs, p.time_nsecs, RCL_ROS_TIME);
+  };
+  while (!research_points_.empty() && stamp(research_points_.front()) <= end) {
+    if (stamp(research_points_.front()) >= start)
+      output->push_back(research_points_.front());
+    research_points_.pop_front();
+  }
 }
 
 bool LidarProcess::GetPointCloud(EllipseLioPointCloudPtr pc,
@@ -333,6 +348,25 @@ void LidarProcess::PointCloudHandler(
   }
 
   proc_points = num_points - rej_points.load();
+  if (params_.research_full_cloud) {
+    std::vector<EllipseLioPoint> full;
+    full.reserve(proc_points);
+    for (int bin = 0; bin < num_bins_; ++bin)
+      for (int j = 0; j < bin_sizes_[bin]; ++j)
+        full.push_back(process_pc_->points[bin_idxs_[bin][j]]);
+    std::stable_sort(full.begin(), full.end(), [](const auto& a, const auto& b) {
+      return std::tie(a.time_secs, a.time_nsecs) < std::tie(b.time_secs, b.time_nsecs);
+    });
+    const auto previous_size = research_points_.size();
+    research_points_.insert(research_points_.end(), full.begin(), full.end());
+    std::inplace_merge(research_points_.begin(), research_points_.begin()+previous_size,
+        research_points_.end(), [](const auto& a, const auto& b) {
+          return std::tie(a.time_secs, a.time_nsecs) < std::tie(b.time_secs, b.time_nsecs);
+        });
+    // Bounded evidence queue. Fail explicitly instead of losing measurements.
+    if (research_points_.size() > 2000000)
+      throw std::runtime_error("research raw-cloud queue exceeded 2 million points");
+  }
 
   for (size_t i = 0; i < num_bins_; i++) {
     if (mean_num > 0.5 * proc_points && bin_sizes_[i] < 0.01 * proc_points) {

@@ -34,7 +34,8 @@ ImuProcess::ImuProcess(IkfomSPtr kf, ImuParams params,
   q_.block<3, 3>(9, 9).diagonal() = acc_bias_;
 
   sub_imu_ = node_->create_subscription<sensor_msgs::msg::Imu>(
-      params.topic, rclcpp::SensorDataQoS(),
+      params.topic, node_->get_parameter("input.reliable").as_bool() ?
+          rclcpp::QoS(1000).reliable() : rclcpp::QoS(rclcpp::SensorDataQoS()),
       std::bind(&ImuProcess::ImuCallback, this, std::placeholders::_1),
       imu_opt);
 }
@@ -326,7 +327,7 @@ void ImuProcess::ColorisePoint(EllipseLioPoint* pt, const CamProcessVec& cams,
   }
 }
 
-void ImuProcess::UpdateStatesWithLidar(KfState* kf_state,
+bool ImuProcess::UpdateStatesWithLidar(KfState* kf_state,
                                        const rclcpp::Time& lidar_end_time,
                                        double max_solve_time) {
   int match_idx;
@@ -344,7 +345,7 @@ void ImuProcess::UpdateStatesWithLidar(KfState* kf_state,
                                                 max_solve_time)) {
     RCLCPP_ERROR_THROTTLE(node_->get_logger(), clk, 1000,
                           "Insufficient matches for iEKF update");
-    return;
+    return false;
   }
 
   imu_mutex_.lock();
@@ -394,6 +395,7 @@ void ImuProcess::UpdateStatesWithLidar(KfState* kf_state,
 
   SetKfState();
   imu_mutex_.unlock();
+  return true;
 }
 
 void ImuProcess::SetKfState() {

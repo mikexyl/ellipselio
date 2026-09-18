@@ -65,6 +65,13 @@ set(dependencies
 )
 
 ament_auto_add_library(ellipselio_mapping SHARED src/map_processing.cpp src/lidar_processing.cpp src/imu_processing.cpp src/cam_processing.cpp)
+if(S3E_RESEARCH_SOURCE)
+  find_package(nlohmann_json REQUIRED)
+  target_sources(ellipselio_mapping PRIVATE src/research_frame.cpp "${S3E_RESEARCH_SOURCE}/src/research_export.cpp")
+  target_include_directories(ellipselio_mapping PRIVATE "${S3E_RESEARCH_SOURCE}/include")
+  target_link_libraries(ellipselio_mapping nlohmann_json::nlohmann_json)
+  target_compile_definitions(ellipselio_mapping PRIVATE ELLIPSELIO_RESEARCH_EXPORT)
+endif()
 target_include_directories(ellipselio_mapping PRIVATE ${PYTHON_INCLUDE_DIRS})
 
 target_include_directories(ellipselio_mapping PUBLIC

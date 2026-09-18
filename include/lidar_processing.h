@@ -11,6 +11,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <deque>
 
 #include "common_lib.h"
 
@@ -47,6 +48,8 @@ struct LidarParams {
   double vertical_fov;
   /// @brief ROS 2 topic name for point cloud subscription
   std::string topic;
+  bool research_full_cloud = false;
+  bool reliable = false;
 };
 
 /**
@@ -72,6 +75,8 @@ class LidarProcess {
    * @brief Clear all buffered point clouds.
    */
   void ClearPointCloud();
+  void TakeResearchCloud(const rclcpp::Time& start, const rclcpp::Time& end,
+                         EllipseLioPointCloudPtr output);
 
   /**
    * @brief Retrieve processed point cloud and temporal/spatial metadata.
@@ -131,6 +136,7 @@ class LidarProcess {
   std::vector<float> octree_resolutions_;
 
  private:
+  std::deque<EllipseLioPoint> research_points_;
   /**
    * @brief ROS 2 callback for point cloud reception.
    * @param msg_in Incoming PointCloud2 message

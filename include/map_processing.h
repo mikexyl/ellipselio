@@ -36,6 +36,9 @@
 #include "common_lib.h"
 #include "imu_processing.h"
 #include "lidar_processing.h"
+#ifdef ELLIPSELIO_RESEARCH_EXPORT
+#include "research_export.h"
+#endif
 
 namespace ellipselio {
 
@@ -61,6 +64,27 @@ class MappingNode : public rclcpp::Node {
   ~MappingNode();
 
  private:
+#ifdef ELLIPSELIO_RESEARCH_EXPORT
+  std::unique_ptr<ResearchExport> research_export_;
+  EllipseLioPointCloudPtr research_cloud_{new EllipseLioPointCloud()};
+  std::string research_robot_;
+  uint64_t research_frame_ = 0;
+  std::vector<int64_t> research_ellipsoid_times_;
+  size_t research_ellipsoid_next_ = 0;
+  double research_ellipsoid_range_ = 80.0;
+  bool research_ellipsoid_world_ = false;
+  bool research_ellipsoid_keyframes_ = false;
+  double research_key_translation_ = 1.0, research_key_rotation_ = 10.0;
+  double research_key_interval_ = 2.0;
+  int64_t research_last_key_ns_ = 0;
+  Eigen::Vector3d research_last_key_pos_ = Eigen::Vector3d::Zero();
+  Eigen::Quaterniond research_last_key_rot_ = Eigen::Quaterniond::Identity();
+  bool research_lidar_updated_ = false;
+  rclcpp::Time research_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr research_finish_;
+  void ExportResearchFrame();
+  void AddResearchEllipsoids(ResearchExport::Packet& packet);
+#endif
   /**
    * @brief Synchronize IMU, LiDAR, and camera measurements.
    * @return True if synchronization successful and new measurements available

@@ -962,6 +962,8 @@ MappingNode::MappingNode(
   this->declare_parameter<bool>("publish.tf", true);
 
   this->declare_parameter<int>("imu.rate", 100);
+  const bool reliable_input = this->declare_parameter<bool>("input.reliable", false);
+  lidar_params_.reliable = reliable_input;
   this->declare_parameter<double>("imu.gyr_noise", 0.1);
   this->declare_parameter<double>("imu.acc_noise", 0.1);
   this->declare_parameter<double>("imu.gyr_bias", 0.0001);
@@ -1028,6 +1030,35 @@ MappingNode::MappingNode(
                                               std::vector<double>());
   this->get_parameter_or<std::vector<double>>("lidar.r_imu_lidar", r_imu_lidar_,
                                               std::vector<double>());
+#ifdef ELLIPSELIO_RESEARCH_EXPORT
+  if (this->declare_parameter<bool>("research.enabled", false)) {
+    research_robot_ = this->declare_parameter<std::string>("research.robot", "");
+    if (research_robot_.empty()) throw std::invalid_argument("research.robot is required");
+    research_ellipsoid_times_ = this->declare_parameter<std::vector<int64_t>>(
+        "research.ellipsoid_stamps_ns", std::vector<int64_t>{});
+    research_ellipsoid_range_ = this->declare_parameter<double>("research.ellipsoid_range_m", 80.0);
+    research_ellipsoid_world_ = this->declare_parameter<bool>("research.ellipsoid_world_frame", false);
+    research_ellipsoid_keyframes_ = this->declare_parameter<bool>("research.ellipsoid_keyframes", false);
+    research_key_translation_ = this->declare_parameter<double>("research.keyframe_translation_m", 1.0);
+    research_key_rotation_ = this->declare_parameter<double>("research.keyframe_rotation_deg", 10.0);
+    research_key_interval_ = this->declare_parameter<double>("research.keyframe_interval_s", 2.0);
+    if ((research_ellipsoid_keyframes_ && !research_ellipsoid_times_.empty()) ||
+        !std::isfinite(research_key_translation_) || research_key_translation_ <= 0 ||
+        !std::isfinite(research_key_rotation_) || research_key_rotation_ <= 0 ||
+        !std::isfinite(research_key_interval_) || research_key_interval_ <= 0)
+      throw std::invalid_argument("Invalid or conflicting ellipsoid keyframe selection");
+    if (!std::is_sorted(research_ellipsoid_times_.begin(), research_ellipsoid_times_.end()) ||
+        std::adjacent_find(research_ellipsoid_times_.begin(), research_ellipsoid_times_.end()) != research_ellipsoid_times_.end() ||
+        (!research_ellipsoid_times_.empty() && research_ellipsoid_times_.front() <= 0) ||
+        !std::isfinite(research_ellipsoid_range_) || research_ellipsoid_range_ <= 0)
+      throw std::invalid_argument("Invalid ellipsoid snapshot schedule/range");
+    research_export_ = std::make_unique<ResearchExport>(
+        this->declare_parameter<std::string>("research.python", ""),
+        this->declare_parameter<std::string>("research.writer", ""),
+        this->declare_parameter<std::string>("research.output", ""), 2);
+    lidar_params_.research_full_cloud = true;
+  }
+#endif
 
   this->get_parameter_or<int>("cameras.num_cams", num_cams_, 0);
   this->get_parameter_or<std::string>("cameras.transport", cam_transport_,
@@ -1149,6 +1180,18 @@ MappingNode::MappingNode(
       this, this->get_clock(),
       std::chrono::milliseconds(std::max(1000 / imu_params_.rate, 10)),
       std::bind(&MappingNode::TimerCallback, this), loop_callback_group_);
+#ifdef ELLIPSELIO_RESEARCH_EXPORT
+  if (research_export_) {
+    research_finish_ = this->create_service<std_srvs::srv::Trigger>(
+        "/" + research_robot_ + "/research/finish",
+        [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+               std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+          loop_timer_->cancel();
+          try { research_export_->close(); response->success = true; }
+          catch (const std::exception& e) { response->message = e.what(); }
+        }, rmw_qos_profile_services_default, loop_callback_group_);
+  }
+#endif
   if (publish_tf_ || publish_analytics_ || publish_scan_) {
     pub_odom_lid_timer_ = rclcpp::create_timer(
         this, this->get_clock(),
@@ -1188,7 +1231,11 @@ MappingNode::MappingNode(
   RCLCPP_INFO(this->get_logger(), "Node init finished.");
 }
 
-MappingNode::~MappingNode() {}
+MappingNode::~MappingNode() {
+#ifdef ELLIPSELIO_RESEARCH_EXPORT
+  if (research_export_) research_export_->close();
+#endif
+}
 
 void MappingNode::InitCamProcess() {
   if (num_cams_ == 0) return;
@@ -1405,19 +1452,42 @@ void MappingNode::TimerCallback() {
 
     imu_process_->UndistortPointCloud(scan_cloud_, &kf_state_, scan_start_time_,
                                       scan_end_time_, cams_process_);
+#ifdef ELLIPSELIO_RESEARCH_EXPORT
+    if (research_export_) {
+      lid_process_->TakeResearchCloud(scan_start_time_, scan_end_time_, research_cloud_);
+      KfState full_state;
+      imu_process_->UndistortPointCloud(research_cloud_, &full_state,
+          scan_start_time_, scan_end_time_, cams_process_);
+      if (full_state.time != kf_state_.time)
+        throw std::runtime_error("research deskew/state timestamp mismatch");
+      research_stamp_ = full_state.time;
+      research_lidar_updated_ = false;
+    }
+#endif
 
     t2 = omp_get_wtime();
 
     if (map_counter_) {
       ekfom_iter_cnt_ = 0;
-      imu_process_->UpdateStatesWithLidar(&kf_state_, scan_end_time_,
+      const bool updated = imu_process_->UpdateStatesWithLidar(&kf_state_, scan_end_time_,
                                           0.5 / lidar_params_.rate);
+#ifdef ELLIPSELIO_RESEARCH_EXPORT
+      research_lidar_updated_ = updated;
+#endif
     }
 
     t3 = omp_get_wtime();
+#ifdef ELLIPSELIO_RESEARCH_EXPORT
+    if (research_export_ && research_ellipsoid_times_.empty() && !research_ellipsoid_keyframes_) ExportResearchFrame();
+#endif
 
     map_mutex_.lock();
     MapIncremental();
+#ifdef ELLIPSELIO_RESEARCH_EXPORT
+    // Snapshot tensors only after both tensor-voting passes, while the map is
+    // locked. The default export path and estimator computations are unchanged.
+    if (research_export_ && (!research_ellipsoid_times_.empty() || research_ellipsoid_keyframes_)) ExportResearchFrame();
+#endif
     map_mutex_.unlock();
 
     t4 = omp_get_wtime();
