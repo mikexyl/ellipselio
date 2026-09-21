@@ -58,3 +58,25 @@ int64 run_time
 int64 traj_dist
 int64 ram_usage
 int64 cpu_usage
+# Exact sensor reference for update diagnostics (independent of publication time).
+int64 stamp_ns
+bool lidar_updated
+int64 active_submap_id
+int64 successor_submap_id
+uint64 handovers
+uint64 active_features
+uint64 successor_features
+float64 correspondence_age_mean
+float64 correspondence_age_max
+string submap_strategy
+string submap_event
+float64 active_extent_m
+float64 successor_extent_m
+float64 active_age_s
+uint64 successor_support
+float64 successor_support_ratio
+float64 active_area_m2
+float64 active_new_area_m2
+float64 successor_area_m2
+float64 shared_area_m2
+float64 coverage_overlap_ratio

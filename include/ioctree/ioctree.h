@@ -204,7 +204,7 @@ class Octree {
     bucket_size_ = fmin(bucket_size_, kMaxBucket);
   }
 
-  ~Octree() { clear(); }
+  ~Octree() { clear(); delete[] new_points; delete[] all_points; }
 
   void SetOrder(bool ordered = false) { ordered_ = ordered; }
 
@@ -880,6 +880,24 @@ class Octree {
     return data.size();
   }
 
+  template <typename Accept>
+  int32_t KnnNeighborsIf(const Eigen::Vector3f& query, int k,
+                        std::vector<int>& resultIndices,
+                        std::vector<float>& distances, float search_rad,
+                        const Accept& accept) {
+    resultIndices.clear();distances.clear();
+    if (root_==nullptr || k<=0) return 0;
+    const float query_[3]={query(0),query(1),query(2)};
+    KNNSimpleResultSet heap(k);
+    KnnNeighborsIf(root_,query_,heap,search_rad*search_rad,accept);
+    const auto& data=heap.GetData();
+    for (size_t i=0;i<heap.size();++i) {
+      resultIndices.push_back(static_cast<int>(data[i].index_[3]));
+      distances.push_back(data[i].dist_);
+    }
+    return resultIndices.size();
+  }
+
   void BoxWiseDelete(const BoxDeleteType& box_range, bool clear_data) {
     if (root_ == nullptr) return;
     bool deleted = false;
@@ -959,8 +977,8 @@ class Octree {
  protected:
   Octant* root_;
   size_t last_pts_num, pts_num_deleted, octant_num, octant_max;
-  float* new_points;
-  float* all_points;
+  float* new_points = nullptr;
+  float* all_points = nullptr;
   Octant* all_octants;
 
   Octree(const Octree&) = delete;
@@ -1316,6 +1334,35 @@ class Octree {
       if (KnnNeighbors(octant->child[c], query, heap, sqrRadius)) return true;
     }
     return heap.full() && inside(query, heap.WorstDist(), octant);
+  }
+
+  template <typename Accept>
+  bool KnnNeighborsIf(const Octant* octant, const float* query,
+                      KNNSimpleResultSet& heap, float sqrRadius,
+                      const Accept& accept) {
+    if (!octant->is_active_) return false;
+    if (octant->child==nullptr) {
+      for (auto* p:octant->points) {
+        float dist=0;
+        for (int j=0;j<3;++j) {const float diff=p[j]-query[j];dist+=diff*diff;}
+        if (dist>0 && dist<=sqrRadius && dist<heap.WorstDist() && accept(static_cast<int>(p[3])))
+          heap.AddPoint(dist,p);
+      }
+      return heap.full() && inside(query,heap.WorstDist(),octant);
+    }
+    size_t mortonCode=0;
+    if (query[0]>octant->x) mortonCode|=1;
+    if (query[1]>octant->y) mortonCode|=2;
+    if (query[2]>octant->z) mortonCode|=4;
+    if (octant->child[mortonCode] && KnnNeighborsIf(octant->child[mortonCode],query,heap,sqrRadius,accept)) return true;
+    for (int i=0;i<7;++i) {
+      const int c=ordered_indices_[mortonCode][i];
+      if (!octant->child[c]) continue;
+      if (heap.full() && !overlaps(query,heap.WorstDist(),octant->child[c])) continue;
+      if (!overlaps(query,sqrRadius,octant->child[c])) continue;
+      if (KnnNeighborsIf(octant->child[c],query,heap,sqrRadius,accept)) return true;
+    }
+    return heap.full() && inside(query,heap.WorstDist(),octant);
   }
 
   void BoxWiseDelete(Octant* octant, const BoxDeleteType& box_range,

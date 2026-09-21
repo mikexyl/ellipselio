@@ -10,6 +10,7 @@
 #define MAP_PROCESSING_H_
 
 #include <math.h>
+#include <fstream>
 #include <omp.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <sys/times.h>
@@ -26,6 +27,7 @@
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <random>
+#include <unordered_map>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -64,6 +66,8 @@ class MappingNode : public rclcpp::Node {
   ~MappingNode();
 
  private:
+  friend struct SubmapTest;
+  friend struct AreaMapTest;
 #ifdef ELLIPSELIO_RESEARCH_EXPORT
   std::unique_ptr<ResearchExport> research_export_;
   EllipseLioPointCloudPtr research_cloud_{new EllipseLioPointCloud()};
@@ -158,6 +162,92 @@ class MappingNode : public rclcpp::Node {
   void TensorRegistration(state_ikfom& s,
                           esekfom::dyn_share_datastruct<double>& ekfom_data);
 
+  // Only this object owns geometry and adaptive neighbourhood statistics.
+  // Swapping pointers never copies an octree or its internal point indices.
+  struct MapBuffer {
+    EllipseLioPointCloudPtr map_cloud_{new EllipseLioPointCloud()};
+    iOctree::Octree ioctree_;
+    int old_map_size_ = 0, new_map_size_ = 0, last_map_size_ = 0;
+    std::vector<M3F> tensors_p1_;
+    std::vector<M3F> tensors_p2_;
+    std::vector<M3F> eigenvectors_;
+    std::vector<V3F> eigenvalues_;
+    std::vector<V3F> salivalues_;
+    std::vector<int> update_idx_;
+    std::vector<int> saliency_idxs_;
+    std::vector<std::vector<int>> neighbours_;
+    std::vector<Eigen::Vector2i> filters_;
+    Eigen::ArrayXi n_means_;
+    std::vector<int> min_neighbours_, max_neighbours_, cnt_neighbours_;
+    int64_t id = -1, begin_ns = 0, last_ns = 0;
+    int64_t retire_ns = 0;
+    V3D origin = V3D::Zero(), up = V3D::UnitZ();
+    double extent_m = 0;
+    std::string finish_reason;
+    std::vector<int> members;
+    std::vector<int> member_point_counts;
+    // Shared gravity-grid coordinates -> first member scan observing that cell.
+    std::unordered_map<int64_t, int> coverage_cells;
+    size_t coverage_seed_cells = 0;
+    double shared_area_m2 = 0, overlap_ratio = 0;
+    int64_t overlap_successor_id = -1;
+    EllipseLioPointCloud geometry;
+    KfState anchor;
+  };
+  std::unique_ptr<MapBuffer> map_{new MapBuffer()}, successor_;
+  // Persistent native map for area snapshots. Never swapped into odometry.
+  std::unique_ptr<MapBuffer> area_history_;
+  bool area_maps_enabled_ = false;
+  bool area_odometry_ = false;
+  V3D area_query_center_ = V3D::Zero(), area_query_up_ = V3D::UnitZ();
+  double area_radius_m_ = 80, area_step_m_ = 20;
+  int64_t area_interval_ns_ = 10000000000LL, area_first_ns_ = 0, area_last_ns_ = 0;
+  int64_t area_next_id_ = 0;
+  V3D area_last_center_ = V3D::Zero();
+  std::vector<int> SelectAreaPoints(const MapBuffer& source, const V3D& center, const V3D& up) const;
+  void PrepareAreaOdometry(int64_t stamp);
+  void FindOdometryNeighbors(const V3F& query, float radius, std::vector<int>& ids, std::vector<float>& distances);
+  bool submaps_enabled_ = false, successor_started_ = false;
+  std::string submap_strategy_ = "temporal", submap_distance_metric_ = "3d", submap_event_;
+  double submap_radius_m_ = 40, submap_overlap_m_ = 20, submap_support_ratio_ = .2;
+  int submap_min_support_ = 50;
+  int64_t submap_max_age_ns_ = 120000000000LL;
+  double coverage_cell_m_ = 1, coverage_target_m2_ = 4000, coverage_start_m2_ = 2000;
+  double coverage_new_m2_ = 2000, coverage_start_new_m2_ = 1000;
+  double coverage_shared_m2_ = 1000, coverage_overlap_ratio_ = .25;
+  double coverage_max_displacement_m_ = 80;
+  bool coverage_frame_ready_ = false;
+  V3D coverage_origin_ = V3D::Zero(), coverage_x_ = V3D::UnitX(), coverage_y_ = V3D::UnitY();
+  int64_t submap_duration_ns_ = 10000000000LL, submap_stride_ns_ = 5000000000LL;
+  int64_t next_submap_id_ = 0;
+  std::vector<int64_t> scan_times_;
+  Eigen::ArrayXd correspondence_ages_;
+  void InitMapBuffer(MapBuffer& map);
+  void ResetMapBuffer(MapBuffer& map, int64_t begin);
+  void AdvanceSubmaps(int64_t stamp);
+  void AdvanceSpatialSubmaps(int64_t stamp);
+  void AdvanceCoverageSubmaps(int64_t stamp);
+  void UpdateCoverage();
+  double CoverageArea(const MapBuffer& map) const;
+  double CoverageNewArea(const MapBuffer& map) const;
+  void MeasureCoverageOverlap();
+  bool SuccessorSupportsScan();
+  void ClearPublishedMap();
+  void InsertWorldScan(bool record_members = true);
+#ifdef ELLIPSELIO_RESEARCH_EXPORT
+  std::ofstream diagnostics_;
+  bool outputs_closed_ = false;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr mapping_finish_;
+  void CloseMappingOutputs();
+  std::unique_ptr<ResearchExport> submap_export_;
+  std::string submap_robot_;
+  void ExportSubmap(bool complete, int64_t available_ns);
+  std::unique_ptr<ResearchExport> area_export_;
+  std::string area_robot_;
+  ResearchExport::Packet AreaSnapshot(const std::string& reason);
+  void MaybeExportArea(bool shutdown = false);
+#endif
+
   /// @brief Main loop timer callback for odometry estimation
   void TimerCallback();
   /// @brief Initialize camera processors from node parameters
@@ -204,8 +294,7 @@ class MappingNode : public rclcpp::Node {
   bool publish_analytics_;
   bool publish_tf_;
   int vel_pose_counter_ = 0;
-  int map_counter_ = 0, old_map_size_ = 0, new_map_size_ = 0,
-      last_map_size_ = 0;
+  int map_counter_ = 0;
 
   double start_time_;
   bool initialized_ = false;
@@ -223,7 +312,6 @@ class MappingNode : public rclcpp::Node {
   int ekfom_upd_cnt_ = 0;
 
   Eigen::ArrayXf n_res_;
-  Eigen::ArrayXi n_means_;
   Eigen::ArrayXXi n_cnts_;
   Eigen::ArrayXXi n_bins_;
 
@@ -245,11 +333,6 @@ class MappingNode : public rclcpp::Node {
   std::vector<Eigen::Vector3f> poses_;
   std::vector<Eigen::Quaternionf> rotes_;
 
-  std::vector<M3F> tensors_p1_;
-  std::vector<M3F> tensors_p2_;
-  std::vector<M3F> eigenvectors_;
-  std::vector<V3F> eigenvalues_;
-  std::vector<V3F> salivalues_;
 
   Eigen::ArrayXi raw_cloud_bins_;
   Eigen::ArrayXi scan_cloud_bins_;
@@ -262,10 +345,6 @@ class MappingNode : public rclcpp::Node {
   std::vector<std::vector<int>> new_neighbours_;
   std::vector<std::atomic<int>> new_neighbours_size_;
 
-  std::vector<int> update_idx_;
-  std::vector<int> saliency_idxs_;
-  std::vector<std::vector<int>> neighbours_;
-  std::vector<Eigen::Vector2i> filters_;
 
   int num_cams_;
   std::string cam_transport_;
@@ -278,7 +357,6 @@ class MappingNode : public rclcpp::Node {
   std::vector<double> t_imu_lidar_;
   std::vector<double> r_imu_lidar_;
 
-  EllipseLioPointCloudPtr map_cloud_;
   EllipseLioPointCloudPtr raw_cloud_;
   EllipseLioPointCloudPtr scan_cloud_;
   EllipseLioPointCloudPtr scan_cloud_grav_;
@@ -286,7 +364,6 @@ class MappingNode : public rclcpp::Node {
   EllipseLioPointCloudPtr buffer_cloud_;
   EllipseLioPointCloudPtr scan_cloud_pub_;
 
-  iOctree::Octree ioctree_;
 
   ImuParams imu_params_;
   LidarParams lidar_params_;

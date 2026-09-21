@@ -113,9 +113,9 @@ bool MappingNode::SyncPackages() {
 }
 
 void MappingNode::ComputeTensorVote(int i, int j, M3F* A_j, bool first_pass) {
-  V3F p_i = map_cloud_->points[i].getVector3fMap();
-  V3F p_j = map_cloud_->points[j].getVector3fMap();
-  const int& bin_idx = map_cloud_->points[i].bin_idx;
+  V3F p_i = map_->map_cloud_->points[i].getVector3fMap();
+  V3F p_j = map_->map_cloud_->points[j].getVector3fMap();
+  const int& bin_idx = map_->map_cloud_->points[i].bin_idx;
   float search_rad = lid_process_->search_radii_[bin_idx];
   float d_ij = (p_i - p_j).norm();
   float c_ij = std::exp(-std::pow(d_ij, 2) / search_rad);
@@ -124,7 +124,7 @@ void MappingNode::ComputeTensorVote(int i, int j, M3F* A_j, bool first_pass) {
   M3F R_ij = Eye3f - 2.0 * rrt;
   M3F Rp_ij = (Eye3f - 0.5 * rrt) * R_ij;
   M3F K_j = Eye3f;
-  if (!first_pass) K_j = tensors_p2_[j];
+  if (!first_pass) K_j = map_->tensors_p2_[j];
   *A_j = c_ij * R_ij * K_j * Rp_ij;
 }
 
@@ -137,7 +137,7 @@ void MappingNode::ComputeTensorEigen(int i, M3F* tensor, bool first_pass) {
   eig_vec = eig_solver.eigenvectors();
   eig_val = eig_solver.eigenvalues().cwiseAbs();
 
-  const int& bin_idx = map_cloud_->points[i].bin_idx;
+  const int& bin_idx = map_->map_cloud_->points[i].bin_idx;
   const float& search_rad = lid_process_->search_radii_[bin_idx];
 
   if (first_pass) {
@@ -146,35 +146,35 @@ void MappingNode::ComputeTensorEigen(int i, M3F* tensor, bool first_pass) {
     tensor_i2 += (eig_val(1) - eig_val(0)) *
                  (eig_vec.col(2) * eig_vec.col(2).transpose() +
                   eig_vec.col(1) * eig_vec.col(1).transpose());
-    tensors_p2_[i] = tensor_i2;
+    map_->tensors_p2_[i] = tensor_i2;
   } else {
     sali_val(0) = eig_val(2) - eig_val(1);
     sali_val(1) = eig_val(1) - eig_val(0);
     sali_val(2) = eig_val(0);
-    sali_val.maxCoeff(&saliency_idxs_[i]);
+    sali_val.maxCoeff(&map_->saliency_idxs_[i]);
 
-    filters_[i][1] = true;
-    salivalues_[i] = sali_val;
-    eigenvalues_[i] = (1.0 / (eig_val.array() + 1e-10)).matrix().normalized();
-    eigenvalues_[i] *= search_rad;
-    eigenvectors_[i] = eig_vec;
-    map_cloud_->points[i].prim_type = (saliency_idxs_[i] + 1) * 85;
+    map_->filters_[i][1] = true;
+    map_->salivalues_[i] = sali_val;
+    map_->eigenvalues_[i] = (1.0 / (eig_val.array() + 1e-10)).matrix().normalized();
+    map_->eigenvalues_[i] *= search_rad;
+    map_->eigenvectors_[i] = eig_vec;
+    map_->map_cloud_->points[i].prim_type = (map_->saliency_idxs_[i] + 1) * 85;
     if (num_cams_) return;
-    switch (saliency_idxs_[i]) {
+    switch (map_->saliency_idxs_[i]) {
       case 0:
-        map_cloud_->points[i].r = 32;
-        map_cloud_->points[i].g = 144;
-        map_cloud_->points[i].b = 240;
+        map_->map_cloud_->points[i].r = 32;
+        map_->map_cloud_->points[i].g = 144;
+        map_->map_cloud_->points[i].b = 240;
         break;
       case 1:
-        map_cloud_->points[i].r = 94;
-        map_cloud_->points[i].g = 201;
-        map_cloud_->points[i].b = 98;
+        map_->map_cloud_->points[i].r = 94;
+        map_->map_cloud_->points[i].g = 201;
+        map_->map_cloud_->points[i].b = 98;
         break;
       case 2:
-        map_cloud_->points[i].r = 253;
-        map_cloud_->points[i].g = 231;
-        map_cloud_->points[i].b = 36;
+        map_->map_cloud_->points[i].r = 253;
+        map_->map_cloud_->points[i].g = 231;
+        map_->map_cloud_->points[i].b = 36;
         break;
     }
   }
@@ -192,34 +192,34 @@ void MappingNode::TensorVotePass1(int old_map_size,
 
     map_i = added_idxs[i];
     updated_pt_[map_i] = 0;
-    map_cloud_->points[map_i].prim_type = 0;
+    map_->map_cloud_->points[map_i].prim_type = 0;
 
-    const int& bin_idx = map_cloud_->points[map_i].bin_idx;
+    const int& bin_idx = map_->map_cloud_->points[map_i].bin_idx;
     const int& bucket_size = lid_process_->bucket_sizes_[bin_idx];
     const float search_rad = lid_process_->search_radii_[bin_idx];
 
-    neighbours_[map_i].reserve(lid_process_->max_neighbours_[bin_idx]);
-    ioctree_.RadiusNeighbors(map_cloud_->points[map_i], search_rad,
-                             neighbours_[map_i], bucket_size);
+    map_->neighbours_[map_i].reserve(map_->max_neighbours_[bin_idx]);
+    map_->ioctree_.RadiusNeighbors(map_->map_cloud_->points[map_i], search_rad,
+                             map_->neighbours_[map_i], bucket_size);
 
     n_bins_.row(i).setZero();
     n_cnts_.row(i).setZero();
     n_bins_(i, bin_idx) = 1;
-    n_cnts_(i, bin_idx) = neighbours_[map_i].size();
+    n_cnts_(i, bin_idx) = map_->neighbours_[map_i].size();
   }
 
 #pragma omp parallel for
   for (int i = 0; i < lid_process_->num_bins_; i++) {
     int n_bins_sum = n_bins_.col(i).head(added_size).sum();
-    int tot_sum = lid_process_->cnt_neighbours_[i] + n_bins_sum;
+    int tot_sum = map_->cnt_neighbours_[i] + n_bins_sum;
     if (!n_bins_sum) continue;
-    n_means_(i) = floor(n_means_(i) * lid_process_->cnt_neighbours_[i]);
-    n_means_(i) += n_cnts_.col(i).head(added_size).sum();
-    n_means_(i) = floor(n_means_(i) / tot_sum);
-    n_means_(i) = fmin(fmax(n_means_(i), kMinNeighbours), kMaxNeighbours);
-    lid_process_->min_neighbours_[i] = n_means_(i);
-    lid_process_->max_neighbours_[i] = fmin(2 * n_means_(i), kMaxNeighbours);
-    lid_process_->cnt_neighbours_[i] += n_bins_sum;
+    map_->n_means_(i) = floor(map_->n_means_(i) * map_->cnt_neighbours_[i]);
+    map_->n_means_(i) += n_cnts_.col(i).head(added_size).sum();
+    map_->n_means_(i) = floor(map_->n_means_(i) / tot_sum);
+    map_->n_means_(i) = fmin(fmax(map_->n_means_(i), kMinNeighbours), kMaxNeighbours);
+    map_->min_neighbours_[i] = map_->n_means_(i);
+    map_->max_neighbours_[i] = fmin(2 * map_->n_means_(i), kMaxNeighbours);
+    map_->cnt_neighbours_[i] += n_bins_sum;
   }
 
 #pragma omp parallel for
@@ -230,47 +230,47 @@ void MappingNode::TensorVotePass1(int old_map_size,
 
     map_i = added_idxs[i];
 
-    const int& bin_idx = map_cloud_->points[map_i].bin_idx;
-    const int& min_neigh = lid_process_->min_neighbours_[bin_idx];
-    const int& max_neigh = lid_process_->max_neighbours_[bin_idx];
+    const int& bin_idx = map_->map_cloud_->points[map_i].bin_idx;
+    const int& min_neigh = map_->min_neighbours_[bin_idx];
+    const int& max_neigh = map_->max_neighbours_[bin_idx];
 
-    loop_cnt = std::min(static_cast<int>(neighbours_[map_i].size()), max_neigh);
+    loop_cnt = std::min(static_cast<int>(map_->neighbours_[map_i].size()), max_neigh);
     K = Eigen::MatrixXf::Zero(loop_cnt, 9);
 
 #pragma omp parallel for
     for (int j = 0; j < loop_cnt; j++) {
       M3F A_j;
-      int map_j = neighbours_[map_i][j];
+      int map_j = map_->neighbours_[map_i][j];
       ComputeTensorVote(map_i, map_j, &A_j, true);
       K.row(j) = A_j.reshaped(1, 9);
 
       if (map_j >= old_map_size) continue;
 
-      const int& bin_idx_j = map_cloud_->points[map_j].bin_idx;
+      const int& bin_idx_j = map_->map_cloud_->points[map_j].bin_idx;
       float search_rad_j = lid_process_->search_radii_[bin_idx_j];
-      EllipseLioPoint& pt_i = map_cloud_->points[map_i];
-      EllipseLioPoint& pt_j = map_cloud_->points[map_j];
+      EllipseLioPoint& pt_i = map_->map_cloud_->points[map_i];
+      EllipseLioPoint& pt_j = map_->map_cloud_->points[map_j];
       float d_ij = (pt_i.getVector3fMap() - pt_j.getVector3fMap()).norm();
 
       if (d_ij > search_rad_j) continue;
 
       if (!(updated_pt_[map_j]++)) {
-        update_idx_[map_j] = new_neighbours_idx++;
-        new_neighbours_map_idx_[update_idx_[map_j]] = map_j;
-        new_neighbours_size_[update_idx_[map_j]] = 0;
-        new_neighbours_[update_idx_[map_j]]
-                       [new_neighbours_size_[update_idx_[map_j]]++] = map_i;
-      } else if (new_neighbours_size_[update_idx_[map_j]] < kMaxNeighbours) {
-        new_neighbours_[update_idx_[map_j]]
-                       [new_neighbours_size_[update_idx_[map_j]]++] = map_i;
+        map_->update_idx_[map_j] = new_neighbours_idx++;
+        new_neighbours_map_idx_[map_->update_idx_[map_j]] = map_j;
+        new_neighbours_size_[map_->update_idx_[map_j]] = 0;
+        new_neighbours_[map_->update_idx_[map_j]]
+                       [new_neighbours_size_[map_->update_idx_[map_j]]++] = map_i;
+      } else if (new_neighbours_size_[map_->update_idx_[map_j]] < kMaxNeighbours) {
+        new_neighbours_[map_->update_idx_[map_j]]
+                       [new_neighbours_size_[map_->update_idx_[map_j]]++] = map_i;
       }
     }
-    tensors_p1_[map_i] = K.colwise().sum().reshaped(3, 3);
+    map_->tensors_p1_[map_i] = K.colwise().sum().reshaped(3, 3);
 
-    filters_[map_i][0] = loop_cnt >= min_neigh;
-    if (!filters_[map_i][0]) continue;
+    map_->filters_[map_i][0] = loop_cnt >= min_neigh;
+    if (!map_->filters_[map_i][0]) continue;
 
-    tensor_i1 = tensors_p1_[map_i] / float(loop_cnt);
+    tensor_i1 = map_->tensors_p1_[map_i] / float(loop_cnt);
     ComputeTensorEigen(map_i, &tensor_i1, true);
   }
 
@@ -285,18 +285,18 @@ void MappingNode::TensorVotePass1(int old_map_size,
     map_i = new_neighbours_map_idx_[i];
     updated_pt_[map_i] = 0;
 
-    const int& bin_idx = map_cloud_->points[map_i].bin_idx;
-    const int& min_neigh = lid_process_->min_neighbours_[bin_idx];
-    const int& max_neigh = lid_process_->max_neighbours_[bin_idx];
-    if (neighbours_[map_i].size() >= max_neigh) continue;
+    const int& bin_idx = map_->map_cloud_->points[map_i].bin_idx;
+    const int& min_neigh = map_->min_neighbours_[bin_idx];
+    const int& max_neigh = map_->max_neighbours_[bin_idx];
+    if (map_->neighbours_[map_i].size() >= max_neigh) continue;
 
     updated_idxs[upd_idx++] = map_i;
 
-    max_loop = max_neigh - neighbours_[map_i].size();
+    max_loop = max_neigh - map_->neighbours_[map_i].size();
     loop_cnt = std::min(static_cast<int>(new_neighbours_size_[i]), max_loop);
 
-    old_size = neighbours_[map_i].size();
-    neighbours_[map_i].resize(old_size + loop_cnt);
+    old_size = map_->neighbours_[map_i].size();
+    map_->neighbours_[map_i].resize(old_size + loop_cnt);
 
     K = Eigen::MatrixXf::Zero(loop_cnt, 9);
 
@@ -304,17 +304,17 @@ void MappingNode::TensorVotePass1(int old_map_size,
     for (int j = 0; j < loop_cnt; j++) {
       M3F A_j;
       int map_j = new_neighbours_[i][j];
-      neighbours_[map_i][old_size + j] = map_j;
+      map_->neighbours_[map_i][old_size + j] = map_j;
       ComputeTensorVote(map_i, map_j, &A_j, true);
       K.row(j) = A_j.reshaped(1, 9);
     }
 
-    tensors_p1_[map_i] += K.colwise().sum().reshaped(3, 3);
+    map_->tensors_p1_[map_i] += K.colwise().sum().reshaped(3, 3);
 
-    filters_[map_i][0] = neighbours_[map_i].size() >= min_neigh;
-    if (!filters_[map_i][0]) continue;
+    map_->filters_[map_i][0] = map_->neighbours_[map_i].size() >= min_neigh;
+    if (!map_->filters_[map_i][0]) continue;
 
-    tensor_i1 = tensors_p1_[map_i] / float(neighbours_[map_i].size());
+    tensor_i1 = map_->tensors_p1_[map_i] / float(map_->neighbours_[map_i].size());
     ComputeTensorEigen(map_i, &tensor_i1, true);
   }
   updated_idxs.resize(upd_idx);
@@ -334,20 +334,20 @@ void MappingNode::TensorVotePass2(std::vector<int>& added_idxs,
     map_i = i < added_idxs.size() ? added_idxs[i]
                                   : updated_idxs[i - added_idxs.size()];
 
-    const int& bin_idx = map_cloud_->points[map_i].bin_idx;
-    const int& min_neigh = lid_process_->min_neighbours_[bin_idx];
-    const int& max_neigh = lid_process_->max_neighbours_[bin_idx];
-    loop_cnt = std::min(static_cast<int>(neighbours_[map_i].size()), max_neigh);
+    const int& bin_idx = map_->map_cloud_->points[map_i].bin_idx;
+    const int& min_neigh = map_->min_neighbours_[bin_idx];
+    const int& max_neigh = map_->max_neighbours_[bin_idx];
+    loop_cnt = std::min(static_cast<int>(map_->neighbours_[map_i].size()), max_neigh);
 
-    if (!filters_[map_i][0]) continue;
+    if (!map_->filters_[map_i][0]) continue;
 
     K = Eigen::MatrixXf::Zero(loop_cnt, 9);
     K_filter = Eigen::VectorXi::Zero(loop_cnt);
 
 #pragma omp parallel for
     for (int j = 0; j < loop_cnt; j++) {
-      int map_j = neighbours_[map_i][j];
-      if (!filters_[map_j][0]) continue;
+      int map_j = map_->neighbours_[map_i][j];
+      if (!map_->filters_[map_j][0]) continue;
 
       M3F A_j;
       ComputeTensorVote(map_i, map_j, &A_j, false);
@@ -365,9 +365,6 @@ void MappingNode::TensorVotePass2(std::vector<int>& added_idxs,
 }
 
 void MappingNode::MapIncremental() {
-  int start_idx, end_idx;
-  std::vector<int> new_idxs, updated_idxs, added_idxs, map_idxs;
-
   poses_.push_back(kf_state_.state.pos.cast<float>());
   rotes_.push_back(kf_state_.state.rot.cast<float>());
 
@@ -396,43 +393,90 @@ void MappingNode::MapIncremental() {
             .cast<float>();
   }
 
-  start_idx = 0;
-  end_idx = 0;
-  old_map_size_ = map_cloud_->size();
+  scan_times_.push_back(scan_end_time_.nanoseconds());
+  if (area_maps_enabled_ && !area_history_ && map_->map_cloud_->size()+scan_cloud_->size()>kMaxMapPoints)
+    throw std::runtime_error("Persistent area map exceeds native octree capacity; refusing age eviction");
+  InsertWorldScan();
+  if (submaps_enabled_ && successor_started_) {
+    std::swap(map_, successor_);
+    InsertWorldScan();
+    std::swap(map_, successor_);
+  }
+  if (submap_strategy_ == "coverage" && submaps_enabled_) MeasureCoverageOverlap();
+  if (area_maps_enabled_) {
+    if (!area_first_ns_) area_first_ns_ = scan_end_time_.nanoseconds();
+    if (area_history_) {
+      if (area_history_->map_cloud_->size()+scan_cloud_->size()>kMaxMapPoints)
+        throw std::runtime_error("Persistent area map exceeds native octree capacity; refusing age eviction");
+      // Same corrected world scan; independent persistent octree and tensors.
+      const auto odometry_analytics = analytics_msg_;
+      std::swap(map_, area_history_);
+      InsertWorldScan(false);
+      std::swap(map_, area_history_);
+      analytics_msg_ = odometry_analytics;
+    }
+#ifdef ELLIPSELIO_RESEARCH_EXPORT
+    MaybeExportArea();
+#endif
+  }
+}
+
+void MappingNode::InsertWorldScan(bool record_members) {
+  int start_idx = 0, end_idx = 0;
+  std::vector<int> new_idxs, updated_idxs, added_idxs, map_idxs;
+  if (submaps_enabled_ && record_members) {
+    if (map_->members.empty()) {
+      map_->origin = kf_state_.state.pos;
+      map_->up = -kf_state_.state.grav.get_vect().normalized();
+    }
+    V3D displacement = kf_state_.state.pos - map_->origin;
+    if (submap_distance_metric_ == "horizontal" || submap_strategy_ == "coverage")
+      displacement -= map_->up * map_->up.dot(displacement);
+    map_->extent_m = std::max(map_->extent_m, displacement.norm());
+    map_->members.push_back(map_counter_);
+    if (submap_strategy_ == "coverage") {
+      map_->member_point_counts.push_back(scan_cloud_->size());
+      UpdateCoverage();
+    }
+    map_->geometry += *scan_cloud_;
+    map_->last_ns = scan_end_time_.nanoseconds();
+    map_->anchor = kf_state_;
+  }
+  map_->old_map_size_ = map_->map_cloud_->size();
 
   for (int i = 0; i < scan_cloud_bins_.size(); i++) {
     end_idx += scan_cloud_bins_[i];
     if (!scan_cloud_bins_[i]) continue;
     if (end_idx > scan_cloud_->size()) break;
 
-    ioctree_.SetBucketSize(lid_process_->bucket_sizes_[fmax(i, start_bin_)]);
-    ioctree_.Update(*scan_cloud_, added_idxs, map_idxs, start_idx, end_idx,
+    map_->ioctree_.SetBucketSize(lid_process_->bucket_sizes_[fmax(i, start_bin_)]);
+    map_->ioctree_.Update(*scan_cloud_, added_idxs, map_idxs, start_idx, end_idx,
                     map_resolution_);
-    *map_cloud_ += EllipseLioPointCloud(*scan_cloud_, added_idxs);
+    *map_->map_cloud_ += EllipseLioPointCloud(*scan_cloud_, added_idxs);
     new_idxs.insert(new_idxs.end(), map_idxs.begin(), map_idxs.end());
     start_idx = end_idx;
   }
 
-  new_map_size_ = map_cloud_->size();
+  map_->new_map_size_ = map_->map_cloud_->size();
 
-  update_idx_.resize(map_cloud_->size(), 0);
-  saliency_idxs_.resize(map_cloud_->size(), 0);
-  neighbours_.resize(map_cloud_->size(), std::vector<int>());
-  filters_.resize(map_cloud_->size(), Eigen::Vector2i::Zero());
+  map_->update_idx_.resize(map_->map_cloud_->size(), 0);
+  map_->saliency_idxs_.resize(map_->map_cloud_->size(), 0);
+  map_->neighbours_.resize(map_->map_cloud_->size(), std::vector<int>());
+  map_->filters_.resize(map_->map_cloud_->size(), Eigen::Vector2i::Zero());
 
-  tensors_p1_.resize(map_cloud_->size(), M3F::Zero());
-  tensors_p2_.resize(map_cloud_->size(), M3F::Zero());
-  salivalues_.resize(map_cloud_->size(), V3F::Zero());
-  eigenvalues_.resize(map_cloud_->size(), V3F::Zero());
-  eigenvectors_.resize(map_cloud_->size(), M3F::Zero());
+  map_->tensors_p1_.resize(map_->map_cloud_->size(), M3F::Zero());
+  map_->tensors_p2_.resize(map_->map_cloud_->size(), M3F::Zero());
+  map_->salivalues_.resize(map_->map_cloud_->size(), V3F::Zero());
+  map_->eigenvalues_.resize(map_->map_cloud_->size(), V3F::Zero());
+  map_->eigenvectors_.resize(map_->map_cloud_->size(), M3F::Zero());
 
   if (new_idxs.size() > 0) {
-    TensorVotePass1(old_map_size_, new_idxs, updated_idxs);
+    TensorVotePass1(map_->old_map_size_, new_idxs, updated_idxs);
     TensorVotePass2(new_idxs, updated_idxs);
   }
 
-  analytics_msg_.map_size = map_cloud_->size();
-  analytics_msg_.oct_num = ioctree_.OctantSize();
+  analytics_msg_.map_size = map_->map_cloud_->size();
+  analytics_msg_.oct_num = map_->ioctree_.OctantSize();
   analytics_msg_.new_idxs = new_idxs.size();
   analytics_msg_.upd_idxs = updated_idxs.size();
   analytics_msg_.traj_dist = traj_dist_.back();
@@ -473,13 +517,12 @@ void MappingNode::PublishMap() {
 
   sensor_msgs::msg::PointCloud2 map_msg;
   std::vector<sensor_msgs::msg::PointCloud2> map_parts;
-  if (!map_cloud_->size()) return;
-
   std::unique_lock<std::mutex> lock(map_mutex_);
+  if (!map_->map_cloud_->size()) return;
   if (publish_markers_) PublishMarkers();
   if (!publish_map_) return;
 
-  pcl::toROSMsg(*map_cloud_, map_msg);
+  pcl::toROSMsg(*map_->map_cloud_, map_msg);
   lock.unlock();
 
   map_msg.header.stamp = kf_state_pub_.time;
@@ -508,18 +551,18 @@ void MappingNode::PublishMarkers() {
   std::atomic<int> marker_idx = 0;
   visualization_msgs::msg::MarkerArray marker_array;
 
-  if (!map_cloud_->size()) return;
+  if (!map_->map_cloud_->size()) return;
 
-  int count_idx = std::ceil(0.01 * (new_map_size_ - last_map_size_));
+  int count_idx = std::ceil(0.01 * (map_->new_map_size_ - map_->last_map_size_));
 
   marker_array.markers.resize(count_idx);
 #pragma omp parallel for
-  for (int i = last_map_size_; i < new_map_size_; i += 100) {
+  for (int i = map_->last_map_size_; i < map_->new_map_size_; i += 100) {
     Eigen::Quaternionf quat;
     visualization_msgs::msg::Marker marker;
 
     int map_idx = i;
-    if (!filters_[map_idx][1]) continue;
+    if (!map_->filters_[map_idx][1]) continue;
 
     marker.id = map_idx;
     marker.frame_locked = true;
@@ -533,24 +576,24 @@ void MappingNode::PublishMarkers() {
     marker.color.g = 0.0;
     marker.color.b = 0.0;
 
-    quat = eigenvectors_[map_idx];
+    quat = map_->eigenvectors_[map_idx];
 
     marker.pose.orientation.x = quat.x();
     marker.pose.orientation.y = quat.y();
     marker.pose.orientation.z = quat.z();
     marker.pose.orientation.w = quat.w();
 
-    marker.pose.position.x = map_cloud_->points[map_idx].x;
-    marker.pose.position.y = map_cloud_->points[map_idx].y;
-    marker.pose.position.z = map_cloud_->points[map_idx].z;
+    marker.pose.position.x = map_->map_cloud_->points[map_idx].x;
+    marker.pose.position.y = map_->map_cloud_->points[map_idx].y;
+    marker.pose.position.z = map_->map_cloud_->points[map_idx].z;
 
-    switch (saliency_idxs_[map_idx]) {
+    switch (map_->saliency_idxs_[map_idx]) {
       case 0:
         marker.ns = "plane";
         marker.type = visualization_msgs::msg::Marker::SPHERE;
-        marker.scale.x = 2 * eigenvalues_[map_idx](0);
-        marker.scale.y = 2 * eigenvalues_[map_idx](1);
-        marker.scale.z = 2 * eigenvalues_[map_idx](2);
+        marker.scale.x = 2 * map_->eigenvalues_[map_idx](0);
+        marker.scale.y = 2 * map_->eigenvalues_[map_idx](1);
+        marker.scale.z = 2 * map_->eigenvalues_[map_idx](2);
         marker.color.r = 32.0 / 255.0;
         marker.color.g = 144.0 / 255.0;
         marker.color.b = 240.0 / 255.0;
@@ -558,9 +601,9 @@ void MappingNode::PublishMarkers() {
       case 1:
         marker.ns = "line";
         marker.type = visualization_msgs::msg::Marker::SPHERE;
-        marker.scale.x = 2 * eigenvalues_[map_idx](0);
-        marker.scale.y = 2 * eigenvalues_[map_idx](1);
-        marker.scale.z = 2 * eigenvalues_[map_idx](2);
+        marker.scale.x = 2 * map_->eigenvalues_[map_idx](0);
+        marker.scale.y = 2 * map_->eigenvalues_[map_idx](1);
+        marker.scale.z = 2 * map_->eigenvalues_[map_idx](2);
         marker.color.r = 94.0 / 255.0;
         marker.color.g = 201.0 / 255.0;
         marker.color.b = 98.0 / 255.0;
@@ -568,9 +611,9 @@ void MappingNode::PublishMarkers() {
       case 2:
         marker.ns = "ball";
         marker.type = visualization_msgs::msg::Marker::SPHERE;
-        marker.scale.x = 2 * eigenvalues_[map_idx](0);
-        marker.scale.y = 2 * eigenvalues_[map_idx](1);
-        marker.scale.z = 2 * eigenvalues_[map_idx](2);
+        marker.scale.x = 2 * map_->eigenvalues_[map_idx](0);
+        marker.scale.y = 2 * map_->eigenvalues_[map_idx](1);
+        marker.scale.z = 2 * map_->eigenvalues_[map_idx](2);
         marker.color.r = 253.0 / 255.0;
         marker.color.g = 231.0 / 255.0;
         marker.color.b = 36.0 / 255.0;
@@ -578,7 +621,7 @@ void MappingNode::PublishMarkers() {
     }
     marker_array.markers[marker_idx++] = marker;
   }
-  last_map_size_ = new_map_size_;
+  map_->last_map_size_ = map_->new_map_size_;
   marker_array.markers.resize(marker_idx);
   pub_mark_->publish(marker_array);
 }
@@ -696,6 +739,8 @@ void MappingNode::TensorRegistration(
   Eigen::Matrix4f tf_grav;
   Eigen::Vector4f centroid = Eigen::Vector4f::Zero();
 
+  ekfom_data.valid = false;
+  if (scan_cloud_->size() < 2 || map_->map_cloud_->empty() || vel_poses_.empty()) return;
   feat_cnt = 0;
   prim_cnts[0] = 0;
   prim_cnts[1] = 0;
@@ -703,7 +748,7 @@ void MappingNode::TensorRegistration(
 
   grav_norm = kf_state_.state.grav.get_vect().normalized().cast<float>();
   poses_diff = s.pos.cast<float>();
-  poses_diff -= vel_poses_[fmax(vel_poses_.size() - 100, 0)];
+  poses_diff -= vel_poses_[vel_poses_.size() > 100 ? vel_poses_.size() - 100 : 0];
   grav_check = fabs(grav_norm.dot(poses_diff));
   grav_check *= fabs(grav_norm.dot(poses_diff.normalized()));
 
@@ -732,6 +777,7 @@ void MappingNode::TensorRegistration(
   cov_scales = cov_mat.diagonal().cast<double>();
   cov_scales(2) *= cov_score;
   cov_scales(2) *= 180.0 / lidar_params_.vertical_fov;
+  if (!cov_scales.allFinite() || cov_scales.maxCoeff() <= 0) return;
   cov_scales /= cov_scales.maxCoeff();
 
   start_bin_scale = floor(kMaxSearchRes / lid_process_->match_radii_.front());
@@ -773,35 +819,37 @@ void MappingNode::TensorRegistration(
       inc_search_rad = fmax(0.5 * inc_search_rad, kMinSearchRes);
     }
 
-    ioctree_.KnnNeighbors(p_world, 1, N_idxs, N_dst, inc_search_rad);
+    FindOdometryNeighbors(p_world, inc_search_rad, N_idxs, N_dst);
     if (N_idxs.empty()) continue;
 
     map_i = N_idxs[0];
-    if (!filters_[map_i][1]) continue;
+    if (!map_->filters_[map_i][1]) continue;
 
     traj_diff = curr_traj_dist;
-    traj_diff -= traj_dist_[map_cloud_->points[map_i].scan_idx];
+    traj_diff -= traj_dist_[map_->map_cloud_->points[map_i].scan_idx];
     bin_scale = fmax(fmin(bin_idx / 4.0, 10.0), start_bin_scale);
-    if (map_cloud_->points[map_i].scan_idx && s.vel.norm() > 0.1 &&
+    if (map_->map_cloud_->points[map_i].scan_idx && s.vel.norm() > 0.1 &&
         match_rad > bin_scale * search_rad &&
         traj_diff < match_rad / bin_scale) {
       continue;
     }
 
-    scores = salivalues_[map_i] / salivalues_[map_i].sum();
-    n_world = map_cloud_->points[map_i].getVector3fMap();
+    if (!map_->salivalues_[map_i].allFinite() || map_->salivalues_[map_i].sum() <= 0) continue;
+    scores = map_->salivalues_[map_i] / map_->salivalues_[map_i].sum();
+    n_world = map_->map_cloud_->points[map_i].getVector3fMap();
     q = p_world - n_world;
 
-    q_dash = q.dot(eigenvectors_[map_i].col(2)) * eigenvectors_[map_i].col(2);
+    q_dash = q.dot(map_->eigenvectors_[map_i].col(2)) * map_->eigenvectors_[map_i].col(2);
     p_dash = scores(0) * (p_world - q_dash);
 
-    q_dash = q.dot(eigenvectors_[map_i].col(0)) * eigenvectors_[map_i].col(0);
+    q_dash = q.dot(map_->eigenvectors_[map_i].col(0)) * map_->eigenvectors_[map_i].col(0);
     p_dash += scores(1) * (n_world + q_dash);
 
     p_dash += scores(2) * n_world;
 
     norm_vec = p_world - p_dash;
     residual = norm_vec.norm();
+    if (!std::isfinite(residual) || residual <= 0) continue;
     norm_vec.normalize();
 
     time_score = 1.0 / (traj_diff + 1.0);
@@ -821,6 +869,7 @@ void MappingNode::TensorRegistration(
     obs_rot(1) = fabs(a_world.dot(grav_y));
     obs_rot(2) = fabs(a_world.dot(grav_z));
 
+    if (!obs_trans.allFinite() || !obs_rot.allFinite() || !h_x_vec.allFinite() || !std::isfinite(time_score)) continue;
     obs_trans.maxCoeff(&tran_idx);
     obs_idx_trans = V3D::Zero();
     obs_idx_trans(tran_idx) = 1;
@@ -832,9 +881,10 @@ void MappingNode::TensorRegistration(
     obs_rot = obs_rot.cwiseProduct(obs_idx_rot);
 
     feat_num = ++feat_cnt;
-    sali_idx = saliency_idxs_[map_i];
+    sali_idx = map_->saliency_idxs_[map_i];
     prim_num = ++prim_cnts[sali_idx];
 
+    correspondence_ages_[feat_num - 1] = (scan_end_time_.nanoseconds() - scan_times_.at(map_->map_cloud_->points[map_i].scan_idx)) * 1e-9;
     ekfom_data_ot_.row(feat_num - 1) = obs_trans;
     ekfom_data_or_.row(feat_num - 1) = obs_rot;
     ekfom_data_w_.row(feat_num - 1) = time_score;
@@ -847,6 +897,11 @@ void MappingNode::TensorRegistration(
   feat_tot = feat_cnt.load();
   reject_cnt = scan_cloud_->size() - feat_tot;
 
+  if (feat_tot < 2 || !ekfom_data_w_.head(feat_tot).isFinite().all()) {
+    analytics_msg_.num_feats = feat_tot;
+    analytics_msg_.num_reject = reject_cnt;
+    return;
+  }
   wt_min = ekfom_data_w_.head(feat_tot).minCoeff();
   wt_max = ekfom_data_w_.head(feat_tot).maxCoeff();
   wt_mean = ekfom_data_w_.head(feat_tot).mean();
@@ -915,6 +970,10 @@ void MappingNode::TensorRegistration(
   ekfom_data.h_x = ekfom_data_h_x_.topRows(feat_tot);
   ekfom_data.h_x_R = ekfom_data_h_x_r_.leftCols(feat_tot);
 
+  if (!ekfom_data.h.allFinite() || !ekfom_data.h_x.allFinite() || !ekfom_data.h_x_R.allFinite()) return;
+  ekfom_data.valid = true;
+  analytics_msg_.correspondence_age_mean = correspondence_ages_.head(feat_tot).mean();
+  analytics_msg_.correspondence_age_max = correspondence_ages_.head(feat_tot).maxCoeff();
   ekfom_iter_cnt_++;
 
   analytics_msg_.num_planes = cnts(0);
@@ -942,7 +1001,6 @@ void MappingNode::TensorRegistration(
 MappingNode::MappingNode(
     const rclcpp::NodeOptions& options = rclcpp::NodeOptions())
     : Node("mapping_node", options),
-      map_cloud_(new EllipseLioPointCloud()),
       raw_cloud_(new EllipseLioPointCloud()),
       scan_cloud_(new EllipseLioPointCloud()),
       scan_cloud_grav_(new EllipseLioPointCloud()),
@@ -1074,7 +1132,96 @@ MappingNode::MappingNode(
   this->get_parameter_or<std::vector<double>>(
       "cameras.r_cam_lidars", r_cam_lidars_, std::vector<double>());
 
-  map_cloud_->reserve(kMaxMapPoints);
+  submaps_enabled_ = this->declare_parameter<bool>("mapping.submaps.enabled", false);
+  submap_strategy_ = this->declare_parameter<std::string>("mapping.submaps.strategy", "temporal");
+  if (submap_strategy_ != "temporal" && submap_strategy_ != "spatial" && submap_strategy_ != "coverage")
+    throw std::invalid_argument("Submap strategy must be temporal, spatial or coverage");
+  submap_radius_m_ = this->declare_parameter<double>("mapping.submaps.spatial.radius_m", 40.0);
+  submap_overlap_m_ = this->declare_parameter<double>("mapping.submaps.spatial.overlap_m", 20.0);
+  submap_distance_metric_ = this->declare_parameter<std::string>("mapping.submaps.spatial.distance_metric", "3d");
+  const double max_age = this->declare_parameter<double>("mapping.submaps.spatial.max_age_s", 120.0);
+  submap_min_support_ = this->declare_parameter<int>("mapping.submaps.spatial.min_support_points", 50);
+  submap_support_ratio_ = this->declare_parameter<double>("mapping.submaps.spatial.min_support_ratio", .2);
+  if (!std::isfinite(submap_radius_m_) || !std::isfinite(submap_overlap_m_) ||
+      submap_radius_m_ <= 0 || submap_overlap_m_ <= 0 || submap_overlap_m_ > submap_radius_m_/2 ||
+      !std::isfinite(max_age) || max_age <= 0 || max_age > 86400 ||
+      submap_min_support_ <= 0 || submap_min_support_ > 2000 ||
+      !std::isfinite(submap_support_ratio_) || submap_support_ratio_ <= 0 || submap_support_ratio_ > 1 ||
+      (submap_distance_metric_ != "3d" && submap_distance_metric_ != "horizontal"))
+    throw std::invalid_argument("Invalid spatial submap radius, overlap, metric, age or readiness settings");
+  submap_max_age_ns_ = llround(max_age * 1e9);
+  coverage_cell_m_ = declare_parameter<double>("mapping.submaps.coverage.cell_size_m",1.);
+  coverage_target_m2_ = declare_parameter<double>("mapping.submaps.coverage.target_area_m2",4000.);
+  coverage_start_m2_ = declare_parameter<double>("mapping.submaps.coverage.start_area_m2",2000.);
+  coverage_new_m2_ = declare_parameter<double>("mapping.submaps.coverage.new_area_m2",2000.);
+  coverage_start_new_m2_ = declare_parameter<double>("mapping.submaps.coverage.start_new_area_m2",1000.);
+  coverage_shared_m2_ = declare_parameter<double>("mapping.submaps.coverage.min_shared_area_m2",1000.);
+  coverage_overlap_ratio_ = declare_parameter<double>("mapping.submaps.coverage.min_overlap_ratio",.25);
+  coverage_max_displacement_m_ = declare_parameter<double>("mapping.submaps.coverage.max_displacement_m",80.);
+  const double coverage_age = declare_parameter<double>("mapping.submaps.coverage.max_age_s",120.);
+  const int coverage_support = declare_parameter<int>("mapping.submaps.coverage.min_support_points",50);
+  const double coverage_support_ratio = declare_parameter<double>("mapping.submaps.coverage.min_support_ratio",.2);
+  for (const double v:{coverage_cell_m_,coverage_target_m2_,coverage_start_m2_,coverage_new_m2_,
+       coverage_start_new_m2_,coverage_shared_m2_,coverage_overlap_ratio_,coverage_max_displacement_m_,coverage_age,coverage_support_ratio})
+    if (!std::isfinite(v) || v<=0) throw std::invalid_argument("Coverage settings must be finite and positive");
+  if (coverage_cell_m_<.1 || coverage_cell_m_>10 || coverage_start_m2_>coverage_target_m2_ ||
+      coverage_start_new_m2_>coverage_new_m2_ || coverage_new_m2_>coverage_target_m2_ ||
+      coverage_start_new_m2_>coverage_start_m2_ || coverage_shared_m2_>coverage_target_m2_ ||
+      coverage_overlap_ratio_>1 || coverage_age>86400 || coverage_support<1 || coverage_support>2000 || coverage_support_ratio>1)
+    throw std::invalid_argument("Invalid coverage thresholds, grid or guards");
+  if (submap_strategy_=="coverage") {
+    submap_max_age_ns_ = llround(coverage_age*1e9);
+    submap_min_support_ = coverage_support; submap_support_ratio_ = coverage_support_ratio;
+  }
+  const double duration = this->declare_parameter<double>("mapping.submaps.duration_s", 10.0);
+  const double overlap = this->declare_parameter<double>("mapping.submaps.overlap_s", 5.0);
+  if (!std::isfinite(duration) || !std::isfinite(overlap) || duration <= 0 ||
+      overlap <= 0 || overlap > duration / 2)
+    throw std::invalid_argument("Two-buffer submaps require 0 < overlap <= duration/2");
+  submap_duration_ns_ = llround(duration * 1e9);
+  submap_stride_ns_ = llround((duration - overlap) * 1e9);
+  area_maps_enabled_ = declare_parameter<bool>("mapping.area_maps.enabled", false);
+  area_odometry_ = declare_parameter<bool>("mapping.area_maps.odometry", false);
+  if (area_odometry_ && (!area_maps_enabled_ || submaps_enabled_))
+    throw std::invalid_argument("Area odometry requires area_maps.enabled=true and submaps.enabled=false");
+  if (area_odometry_) submap_strategy_="area";
+  area_radius_m_ = declare_parameter<double>("mapping.area_maps.radius_m", 80.);
+  area_step_m_ = declare_parameter<double>("mapping.area_maps.snapshot_step_m", 20.);
+  const double area_interval = declare_parameter<double>("mapping.area_maps.snapshot_interval_s", 10.);
+  if (!std::isfinite(area_radius_m_) || area_radius_m_ <= 0 ||
+      !std::isfinite(area_step_m_) || area_step_m_ <= 0 ||
+      !std::isfinite(area_interval) || area_interval <= 0 || area_interval > 86400)
+    throw std::invalid_argument("Invalid area-map radius or snapshot cadence");
+  area_interval_ns_ = llround(area_interval*1e9);
+#ifdef ELLIPSELIO_RESEARCH_EXPORT
+  const auto diagnostics_path = this->declare_parameter<std::string>("mapping.diagnostics_path", "");
+  if (!diagnostics_path.empty()) {
+    diagnostics_.open(diagnostics_path);
+    if (!diagnostics_) throw std::runtime_error("Cannot open per-scan diagnostics");
+  }
+  if (submaps_enabled_) {
+    submap_robot_ = this->declare_parameter<std::string>("mapping.submaps.robot", "");
+    const auto output = this->declare_parameter<std::string>("mapping.submaps.output", "");
+    if (!output.empty()) {
+      if (submap_robot_.empty()) throw std::invalid_argument("Submap robot required");
+      submap_export_ = std::make_unique<ResearchExport>(
+        this->declare_parameter<std::string>("mapping.submaps.python", ""),
+        this->declare_parameter<std::string>("mapping.submaps.writer", ""), output, 2);
+    }
+  }
+  if (area_maps_enabled_) {
+    area_robot_ = declare_parameter<std::string>("mapping.area_maps.robot", "");
+    const auto output = declare_parameter<std::string>("mapping.area_maps.output", "");
+    if (!output.empty()) {
+      if (area_robot_.empty()) throw std::invalid_argument("Area-map robot required");
+      area_export_ = std::make_unique<ResearchExport>(
+        declare_parameter<std::string>("mapping.area_maps.python", ""),
+        declare_parameter<std::string>("mapping.area_maps.writer", ""), output, 2);
+    }
+  }
+#endif
+  correspondence_ages_ = Eigen::ArrayXd(kMaxProcPoints);
+  map_->map_cloud_->reserve(kMaxMapPoints);
   raw_cloud_->reserve(kMaxProcPoints);
   scan_cloud_->reserve(kMaxProcPoints);
   scan_cloud_grav_->reserve(kMaxProcPoints);
@@ -1084,10 +1231,10 @@ MappingNode::MappingNode(
   map_resolution_ = fmax(map_resolution_, kMinMapRes);
   map_search_rad_ = 10 * map_resolution_;
 
-  ioctree_.SetBucketSize(1);
-  ioctree_.SetMaxOctants(kMaxMapPoints);
-  ioctree_.SetMaxNewPoints(kMaxProcPoints);
-  ioctree_.SetMinExtent(map_resolution_);
+  map_->ioctree_.SetBucketSize(1);
+  map_->ioctree_.SetMaxOctants(kMaxMapPoints);
+  map_->ioctree_.SetMaxNewPoints(kMaxProcPoints);
+  map_->ioctree_.SetMinExtent(map_resolution_);
 
   ekfom_data_sb_ = Eigen::ArrayXd::Zero(100);
   ekfom_data_om_ = Eigen::ArrayXd::Zero(100);
@@ -1102,16 +1249,16 @@ MappingNode::MappingNode(
   ekfom_data_h_v_ = Eigen::ArrayXd(kMaxProcPoints);
   ekfom_data_h_x_v_ = Eigen::MatrixXd(kMaxProcPoints, 6);
 
-  update_idx_.reserve(kMaxMapPoints);
-  saliency_idxs_.reserve(kMaxMapPoints);
-  neighbours_.reserve(kMaxMapPoints);
-  filters_.reserve(kMaxMapPoints);
+  map_->update_idx_.reserve(kMaxMapPoints);
+  map_->saliency_idxs_.reserve(kMaxMapPoints);
+  map_->neighbours_.reserve(kMaxMapPoints);
+  map_->filters_.reserve(kMaxMapPoints);
 
-  tensors_p1_.reserve(kMaxMapPoints);
-  tensors_p2_.reserve(kMaxMapPoints);
-  salivalues_.reserve(kMaxMapPoints);
-  eigenvalues_.reserve(kMaxMapPoints);
-  eigenvectors_.reserve(kMaxMapPoints);
+  map_->tensors_p1_.reserve(kMaxMapPoints);
+  map_->tensors_p2_.reserve(kMaxMapPoints);
+  map_->salivalues_.reserve(kMaxMapPoints);
+  map_->eigenvalues_.reserve(kMaxMapPoints);
+  map_->eigenvectors_.reserve(kMaxMapPoints);
 
   updated_pt_ = std::vector<std::atomic<int>>(kMaxMapPoints);
   new_neighbours_map_idx_ = std::vector<int>(kMaxScanPoints);
@@ -1181,6 +1328,18 @@ MappingNode::MappingNode(
       std::chrono::milliseconds(std::max(1000 / imu_params_.rate, 10)),
       std::bind(&MappingNode::TimerCallback, this), loop_callback_group_);
 #ifdef ELLIPSELIO_RESEARCH_EXPORT
+  if (submap_export_ || area_export_ || diagnostics_.is_open()) {
+    mapping_finish_ = this->create_service<std_srvs::srv::Trigger>(
+      "/" + node_namespace_ + "/mapping/finish",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+        loop_timer_->cancel();
+        try {
+          std::lock_guard<std::mutex> lock(map_mutex_);
+          CloseMappingOutputs(); response->success = true;
+        } catch (const std::exception& e) { response->message = e.what(); }
+      }, rmw_qos_profile_services_default, loop_callback_group_);
+  }
   if (research_export_) {
     research_finish_ = this->create_service<std_srvs::srv::Trigger>(
         "/" + research_robot_ + "/research/finish",
@@ -1233,6 +1392,7 @@ MappingNode::MappingNode(
 
 MappingNode::~MappingNode() {
 #ifdef ELLIPSELIO_RESEARCH_EXPORT
+  CloseMappingOutputs();
   if (research_export_) research_export_->close();
 #endif
 }
@@ -1434,7 +1594,15 @@ void MappingNode::TimerCallback() {
 
     n_res_ = Eigen::ArrayXf::Ones(lidar_params_.rate);
     n_res_ *= 0.5;
-    n_means_ = Eigen::ArrayXi::Zero(lid_process_->num_bins_);
+    InitMapBuffer(*map_);
+    if (submaps_enabled_) {
+      successor_.reset(new MapBuffer());
+      InitMapBuffer(*successor_);
+    }
+    if (area_maps_enabled_ && submaps_enabled_) {
+      area_history_.reset(new MapBuffer());
+      InitMapBuffer(*area_history_);
+    }
     n_cnts_ = Eigen::ArrayXXi::Zero(kMaxProcPoints, lid_process_->num_bins_);
     n_bins_ = Eigen::ArrayXXi::Zero(kMaxProcPoints, lid_process_->num_bins_);
 
@@ -1467,10 +1635,17 @@ void MappingNode::TimerCallback() {
 
     t2 = omp_get_wtime();
 
-    if (map_counter_) {
+    {
+      std::lock_guard<std::mutex> lock(map_mutex_);
+      AdvanceSubmaps(scan_end_time_.nanoseconds());
+    }
+    analytics_msg_.lidar_updated = false;
+    analytics_msg_.num_feats = 0;
+    if (!map_->map_cloud_->empty()) {
       ekfom_iter_cnt_ = 0;
       const bool updated = imu_process_->UpdateStatesWithLidar(&kf_state_, scan_end_time_,
                                           0.5 / lidar_params_.rate);
+      analytics_msg_.lidar_updated = updated;
 #ifdef ELLIPSELIO_RESEARCH_EXPORT
       research_lidar_updated_ = updated;
 #endif
@@ -1490,6 +1665,23 @@ void MappingNode::TimerCallback() {
 #endif
     map_mutex_.unlock();
 
+    analytics_msg_.map_size = map_->map_cloud_->size();
+    analytics_msg_.oct_num = map_->ioctree_.OctantSize();
+    analytics_msg_.stamp_ns = scan_end_time_.nanoseconds();
+    analytics_msg_.active_submap_id = map_->id;
+    analytics_msg_.successor_submap_id = successor_started_ ? successor_->id : -1;
+    analytics_msg_.active_features = map_->map_cloud_->size();
+    analytics_msg_.successor_features = successor_started_ ? successor_->map_cloud_->size() : 0;
+    analytics_msg_.submap_strategy = submap_strategy_;
+    analytics_msg_.submap_event = submap_event_;
+    analytics_msg_.active_extent_m = map_->extent_m;
+    analytics_msg_.successor_extent_m = successor_started_ ? successor_->extent_m : 0;
+    analytics_msg_.active_age_s = submaps_enabled_ ? (scan_end_time_.nanoseconds()-map_->begin_ns)*1e-9 : 0;
+    analytics_msg_.active_area_m2 = CoverageArea(*map_);
+    analytics_msg_.active_new_area_m2 = CoverageNewArea(*map_);
+    analytics_msg_.successor_area_m2 = successor_started_ ? CoverageArea(*successor_) : 0;
+    analytics_msg_.shared_area_m2 = map_->shared_area_m2;
+    analytics_msg_.coverage_overlap_ratio = map_->overlap_ratio;
     t4 = omp_get_wtime();
 
     imu_time = t2 - t1;
@@ -1529,6 +1721,35 @@ void MappingNode::TimerCallback() {
       analytics_msg_.total_max = max_total_time_;
     }
 
+#ifdef ELLIPSELIO_RESEARCH_EXPORT
+    if (diagnostics_.is_open()) {
+      const auto& state = kf_state_.state;
+      const Eigen::Quaterniond q(state.rot.toRotationMatrix());
+      nlohmann::json row = {{"scan_id", map_counter_}, {"sensor_stamp_ns", scan_end_time_.nanoseconds()},
+        {"stamp_ns", kf_state_.time.nanoseconds()}, {"lidar_updated", analytics_msg_.lidar_updated},
+        {"active_submap_id", map_->id}, {"successor_submap_id", analytics_msg_.successor_submap_id},
+        {"handovers", analytics_msg_.handovers}, {"features", analytics_msg_.num_feats},
+        {"residual", analytics_msg_.res_mean}, {"processing_s", total_time},
+        {"age_mean_s", analytics_msg_.correspondence_age_mean}, {"age_max_s", analytics_msg_.correspondence_age_max},
+        {"active_points", map_->map_cloud_->size()}, {"successor_points", analytics_msg_.successor_features},
+        {"submap_strategy", submap_strategy_}, {"submap_event", submap_event_},
+        {"active_begin_ns", map_->begin_ns}, {"active_extent_m", map_->extent_m},
+        {"active_area_m2", CoverageArea(*map_)}, {"active_new_area_m2", CoverageNewArea(*map_)},
+        {"successor_area_m2", analytics_msg_.successor_area_m2},
+        {"shared_area_m2", map_->shared_area_m2}, {"coverage_overlap_ratio", map_->overlap_ratio},
+        {"successor_support", analytics_msg_.successor_support},
+        {"successor_support_ratio", analytics_msg_.successor_support_ratio},
+        {"pose", {state.pos.x(), state.pos.y(), state.pos.z(), q.x(), q.y(), q.z(), q.w()}}};
+      row["odometry_map_source"]=area_odometry_?"accumulated_area":submaps_enabled_?"recent_submap":"persistent_map";
+      if (area_odometry_) {
+        row["query_area_center_world"]={area_query_center_.x(),area_query_center_.y(),area_query_center_.z()};
+        row["query_area_up_world"]={area_query_up_.x(),area_query_up_.y(),area_query_up_.z()};
+        row["query_area_radius_m"]=area_radius_m_;
+      }
+      diagnostics_ << row.dump() << '\n';
+      if (!diagnostics_) throw std::runtime_error("Per-scan diagnostics write failed");
+    }
+#endif
     odom_mutex_.lock();
     kf_state_pub_ = kf_state_;
     if (publish_scan_) *scan_cloud_pub_ = *scan_cloud_;

@@ -83,13 +83,13 @@ void MappingNode::AddResearchEllipsoids(ResearchExport::Packet& packet) {
   msg.point_step = 4*names.size();
   const Eigen::Matrix3f R = kf_state_.state.rot.toRotationMatrix().transpose().cast<float>();
   const Eigen::Vector3f t = kf_state_.state.pos.cast<float>();
-  for (size_t i = 0; i < map_cloud_->size(); ++i) {
-    if (!filters_[i][1]) continue;
-    const auto& p = map_cloud_->points[i];
+  for (size_t i = 0; i < map_->map_cloud_->size(); ++i) {
+    if (!map_->filters_[i][1]) continue;
+    const auto& p = map_->map_cloud_->points[i];
     const Eigen::Vector3f local_center = R*(p.getVector3fMap()-t);
     const Eigen::Vector3f center = research_ellipsoid_world_ ? Eigen::Vector3f(p.getVector3fMap()) : local_center;
-    const Eigen::Vector3f axes = eigenvalues_[i];
-    const Eigen::Matrix3f basis = research_ellipsoid_world_ ? eigenvectors_[i] : Eigen::Matrix3f(R*eigenvectors_[i]);
+    const Eigen::Vector3f axes = map_->eigenvalues_[i];
+    const Eigen::Matrix3f basis = research_ellipsoid_world_ ? map_->eigenvectors_[i] : Eigen::Matrix3f(R*map_->eigenvectors_[i]);
     if (local_center.norm() > research_ellipsoid_range_) continue;
     if (!center.allFinite() || !axes.allFinite() || !basis.allFinite() || axes.minCoeff() <= 0)
       throw std::runtime_error("Invalid fitted map ellipsoid");
