@@ -31,6 +31,8 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <memory>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -209,12 +211,17 @@ class Octree {
   void SetOrder(bool ordered = false) { ordered_ = ordered; }
 
   void SetMaxNewPoints(int max_new_points) {
-    new_points = new float[max_new_points * kDim];
+    new_points_storage_.reset(new float[size_t(max_new_points) * kDim]);
+    new_points = new_points_storage_.get();
   }
 
   void SetMaxOctants(int max_octants) {
-    octant_max = max_octants;
-    all_points = new float[max_octants * kMaxBucket * kDim];
+    if (max_octants <= 0 || root_ != nullptr)
+      throw std::invalid_argument("SetMaxOctants requires a positive initial capacity and an empty tree");
+    octant_block_size_ = size_t(max_octants);
+    point_blocks_.clear();
+    point_blocks_.emplace_back(new float[octant_block_size_ * kMaxBucket * kDim]);
+    octant_max = octant_block_size_;
   }
 
   void SetMinExtent(float extent) { min_extent_ = extent; }
@@ -959,9 +966,23 @@ class Octree {
  protected:
   Octant* root_;
   size_t last_pts_num, pts_num_deleted, octant_num, octant_max;
-  float* new_points;
-  float* all_points;
+  float* new_points = nullptr;
+  std::unique_ptr<float[]> new_points_storage_;
+  size_t octant_block_size_ = 0;
+  std::vector<std::unique_ptr<float[]>> point_blocks_;
   Octant* all_octants;
+
+  // Insertion is serialized by the caller. Allocate another block without
+  // relocating any existing leaf data or temporary pointers used while splitting.
+  float* OctantPoints(size_t index) {
+    if (!octant_block_size_)
+      throw std::logic_error("SetMaxOctants must be called before insertion");
+    const size_t block = index / octant_block_size_;
+    while (point_blocks_.size() <= block)
+      point_blocks_.emplace_back(new float[octant_block_size_ * kMaxBucket * kDim]);
+    octant_max = point_blocks_.size() * octant_block_size_;
+    return point_blocks_[block].get() + (index % octant_block_size_) * kMaxBucket * kDim;
+  }
 
   Octree(const Octree&) = delete;
   Octree& operator=(const Octree&) = delete;
@@ -1005,16 +1026,11 @@ class Octree {
       octant->points.resize(size);
 
       if (octant->idx < 0 && size > 0) octant->idx = octant_num++;
-      if (octant_num >= octant_max) {
-        std::cerr << "Octant overflow max: " << octant_max
-                  << " num: " << octant_num << std::endl;
-        exit(1);
-      }
-      const size_t oct_idx = octant->idx * kMaxBucket * kDim;
+      float* oct_points = octant->idx < 0 ? nullptr : OctantPoints(size_t(octant->idx));
       for (size_t i = 0; i < size; ++i) {
         std::copy(points[i], points[i] + dim,
-                  all_points + oct_idx + (i * kDim));
-        octant->points[i] = all_points + oct_idx + (i * kDim);
+                  oct_points + (i * kDim));
+        octant->points[i] = oct_points + (i * kDim);
         if (octant->points[i][3] < 0) {
           added_idxs.push_back(-(octant->points[i][3] + 1));
           octant->points[i][3] = last_pts_num++;
@@ -1069,16 +1085,11 @@ class Octree {
         const size_t new_size = octant->points.size();
 
         if (octant->idx < 0 && new_size > 0) octant->idx = octant_num++;
-        if (octant_num >= octant_max) {
-          std::cerr << "Octant overflow max: " << octant_max
-                    << " num: " << octant_num << std::endl;
-          exit(1);
-        }
-        const size_t oct_idx = octant->idx * kMaxBucket * kDim;
+        float* oct_points = octant->idx < 0 ? nullptr : OctantPoints(size_t(octant->idx));
         for (size_t i = 0; i < new_size; ++i) {
           std::copy(octant->points[i], octant->points[i] + dim,
-                    all_points + oct_idx + (i * kDim));
-          octant->points[i] = all_points + oct_idx + (i * kDim);
+                    oct_points + (i * kDim));
+          octant->points[i] = oct_points + (i * kDim);
           if (octant->points[i][3] < 0) {
             added_idxs.push_back(-(octant->points[i][3] + 1));
             octant->points[i][3] = last_pts_num++;
@@ -1382,16 +1393,11 @@ class Octree {
 
         octant->points.resize(valid_num);
         if (octant->idx < 0 && valid_num > 0) octant->idx = octant_num++;
-        if (octant_num >= octant_max) {
-          std::cerr << "Octant overflow max: " << octant_max
-                    << " num: " << octant_num << std::endl;
-          exit(1);
-        }
-        const size_t oct_idx = octant->idx * kMaxBucket * kDim;
+        float* oct_points = octant->idx < 0 ? nullptr : OctantPoints(size_t(octant->idx));
         for (size_t i = 0; i < valid_num; ++i) {
           std::copy(remainder_points[i], remainder_points[i] + dim,
-                    all_points + oct_idx + (i * kDim));
-          octant->points[i] = all_points + oct_idx + (i * kDim);
+                    oct_points + (i * kDim));
+          octant->points[i] = oct_points + (i * kDim);
         }
         return;
       }

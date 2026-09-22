@@ -78,8 +78,12 @@ LidarProcess::LidarProcess(LidarParams params, float map_resolution,
     bin_octrees_[i].SetMaxOctants(0.1 * kMaxScanPoints);
   }
 
+  bool reliable = false;
+  node_->get_parameter_or<bool>("input.reliable", reliable, false);
+  auto trial_qos = rclcpp::SensorDataQoS();
+  if (reliable) trial_qos.reliable().keep_last(100);
   sub_pcl_pc_ = node_->create_subscription<sensor_msgs::msg::PointCloud2>(
-      params.topic, rclcpp::SensorDataQoS(),
+      params.topic, trial_qos,
       std::bind(&LidarProcess::LidarCallback, this, std::placeholders::_1),
       lidar_opt);
 }

@@ -70,6 +70,8 @@ struct ImuParams {
 
 class ImuProcess {
  public:
+  // Trial observation only: updated on the mapping callback thread.
+  bool trial_lidar_updated = false;
   /**
    * @brief Destructor.
    */

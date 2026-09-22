@@ -33,8 +33,12 @@ ImuProcess::ImuProcess(IkfomSPtr kf, ImuParams params,
   q_.block<3, 3>(6, 6).diagonal() = gyr_bias_;
   q_.block<3, 3>(9, 9).diagonal() = acc_bias_;
 
+  bool reliable = false;
+  node_->get_parameter_or<bool>("input.reliable", reliable, false);
+  auto trial_qos = rclcpp::SensorDataQoS();
+  if (reliable) trial_qos.reliable().keep_last(1000);
   sub_imu_ = node_->create_subscription<sensor_msgs::msg::Imu>(
-      params.topic, rclcpp::SensorDataQoS(),
+      params.topic, trial_qos,
       std::bind(&ImuProcess::ImuCallback, this, std::placeholders::_1),
       imu_opt);
 }
@@ -329,6 +333,7 @@ void ImuProcess::ColorisePoint(EllipseLioPoint* pt, const CamProcessVec& cams,
 void ImuProcess::UpdateStatesWithLidar(KfState* kf_state,
                                        const rclcpp::Time& lidar_end_time,
                                        double max_solve_time) {
+  trial_lidar_updated = false;
   int match_idx;
   double solve_time;
   IkfomSPtr kf(new Ikfom());
@@ -394,6 +399,7 @@ void ImuProcess::UpdateStatesWithLidar(KfState* kf_state,
 
   SetKfState();
   imu_mutex_.unlock();
+  trial_lidar_updated = true;
 }
 
 void ImuProcess::SetKfState() {

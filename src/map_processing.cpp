@@ -1015,6 +1015,18 @@ MappingNode::MappingNode(
   this->declare_parameter<std::vector<double>>("lidar.r_imu_lidar",
                                                std::vector<double>());
 
+  this->declare_parameter<bool>("input.reliable", false);
+  if (this->declare_parameter<bool>("mapping.submaps.enabled", false) ||
+      this->declare_parameter<bool>("mapping.area_maps.odometry", false))
+    throw std::invalid_argument("Updated upstream odometry requires persistent-map matching; area maps are export-only");
+  if (this->declare_parameter<bool>("research.enabled", false))
+    throw std::invalid_argument("The separate research deskew exporter is unavailable in this upstream integration");
+#ifdef ELLIPSELIO_RESEARCH_EXPORT
+  ConfigureAreaExports();
+#else
+  if (this->declare_parameter<bool>("mapping.area_maps.enabled", false))
+    throw std::invalid_argument("Build with S3E_RESEARCH_SOURCE for area-map export");
+#endif
   this->declare_parameter<int>("cameras.num_cams", 0);
   this->declare_parameter<std::string>("cameras.transport", "raw");
   this->declare_parameter<std::vector<long int>>("cameras.frame_rates",
@@ -1182,6 +1194,16 @@ MappingNode::MappingNode(
       this, this->get_clock(),
       std::chrono::milliseconds(std::max(1000 / imu_params_.rate, 10)),
       std::bind(&MappingNode::TimerCallback, this), loop_callback_group_);
+#ifdef ELLIPSELIO_RESEARCH_EXPORT
+  mapping_finish_ = this->create_service<std_srvs::srv::Trigger>(
+      node_namespace_.empty() ? "/mapping/finish" : "/" + node_namespace_ + "/mapping/finish",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+        loop_timer_->cancel();
+        try { std::lock_guard<std::mutex> lock(map_mutex_); CloseMappingOutputs(); response->success=true; }
+        catch (const std::exception& e) { response->message=e.what(); }
+      }, rmw_qos_profile_services_default, loop_callback_group_);
+#endif
   if (publish_tf_ || publish_analytics_ || publish_scan_) {
     pub_odom_lid_timer_ = rclcpp::create_timer(
         this, this->get_clock(),
@@ -1221,7 +1243,12 @@ MappingNode::MappingNode(
   RCLCPP_INFO(this->get_logger(), "Node init finished.");
 }
 
-MappingNode::~MappingNode() {}
+MappingNode::~MappingNode() {
+#ifdef ELLIPSELIO_RESEARCH_EXPORT
+  try { CloseMappingOutputs(); }
+  catch (const std::exception& e) { RCLCPP_ERROR(get_logger(), "Area export shutdown failed: %s", e.what()); }
+#endif
+}
 
 void MappingNode::InitCamProcess() {
   if (num_cams_ == 0) return;
@@ -1465,10 +1492,22 @@ void MappingNode::TimerCallback() {
     t3 = omp_get_wtime();
 
     map_mutex_.lock();
+#ifdef ELLIPSELIO_RESEARCH_EXPORT
+    if (area_maps_enabled_ && map_cloud_->size()+scan_cloud_->size()>kMaxMapPoints)
+      throw std::runtime_error("Persistent native map capacity exceeded; refusing to discard history");
+#endif
     MapIncremental();
     map_mutex_.unlock();
 
     t4 = omp_get_wtime();
+#ifdef ELLIPSELIO_RESEARCH_EXPORT
+    const double core_time = t4-t1;
+    scan_times_.push_back(scan_end_time_.nanoseconds());
+    if (!area_first_ns_) area_first_ns_=scan_times_.back();
+    { std::lock_guard<std::mutex> lock(map_mutex_); MaybeExportArea(); }
+    const double export_time = omp_get_wtime()-t4;
+    t4 = omp_get_wtime();
+#endif
 
     imu_time = t2 - t1;
     state_time = t3 - t2;
@@ -1507,6 +1546,9 @@ void MappingNode::TimerCallback() {
       analytics_msg_.total_max = max_total_time_;
     }
 
+#ifdef ELLIPSELIO_RESEARCH_EXPORT
+    RecordNativeUpdate(core_time,export_time);
+#endif
     odom_mutex_.lock();
     kf_state_pub_ = kf_state_;
     if (publish_scan_) *scan_cloud_pub_ = *scan_cloud_;

@@ -61,3 +61,9 @@ int64 run_time
 int64 traj_dist
 int64 ram_usage
 int64 cpu_usage
+# Export diagnostics; do not alter upstream registration.
+int64 stamp_ns
+int64 sensor_stamp_ns
+bool lidar_updated
+string odometry_map_source
+float64 snapshot_time
