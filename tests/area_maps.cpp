@@ -26,12 +26,12 @@ struct AreaMapTest {
   assert(n->SelectAreaPoints(before,V3D::UnitZ())==ids); // no age/height eviction on return
   auto packet=n->AreaSnapshot("test");
   assert(packet.metadata["anchor_sensor_ns"]==3000000000LL);
-  assert(packet.metadata["geometry_count"]==3 && packet.metadata["ellipsoid_count"]==3);
+  assert(packet.metadata["geometry_count"]==3 && packet.metadata["schema_version"]==7 && packet.messages.size()==3);
   assert(packet.metadata["odometry_map_source"]=="persistent_map" && packet.metadata["age_limit_s"].is_null());
   assert(packet.metadata["member_scan_ids"]==std::vector<int>({0,1}));
   assert(packet.metadata["available_ns"]>=packet.metadata["stamp_ns"]);
   const auto* saved=reinterpret_cast<const float*>(packet.messages[0].data());
-  const auto* saved_ids=reinterpret_cast<const int32_t*>(packet.messages[2].data());
+  const auto* saved_ids=reinterpret_cast<const int32_t*>(packet.messages[1].data());
   for(size_t i=0;i<ids.size();++i) {
     assert(saved_ids[i]==ids[i]);
     const V3D restored=n->kf_state_.state.rot*Eigen::Map<const V3F>(saved+3*i).cast<double>()+before;

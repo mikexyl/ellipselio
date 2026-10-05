@@ -28,6 +28,9 @@
   <depend>pcl_conversions</depend>
   <depend>image_transport</depend>
 
+  <build_depend>submap_slam_io</build_depend>
+  <exec_depend>submap_slam_io</exec_depend>
+
   <exec_depend>rosidl_default_runtime</exec_depend>
   <member_of_group>rosidl_interface_packages</member_of_group>
 

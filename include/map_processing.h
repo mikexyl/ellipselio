@@ -34,8 +34,8 @@
 #include <visualization_msgs/msg/marker_array.hpp>
 
 #include "common_lib.h"
-#ifdef ELLIPSELIO_RESEARCH_EXPORT
-#include "research_export.h"
+#ifdef ELLIPSELIO_AREA_EXPORT
+#include <submap_slam_io/snapshot_writer.hpp>
 #endif
 #include "imu_processing.h"
 #include "lidar_processing.h"
@@ -65,21 +65,21 @@ class MappingNode : public rclcpp::Node {
 
  private:
   friend struct AreaMapTest;
-#ifdef ELLIPSELIO_RESEARCH_EXPORT
+#ifdef ELLIPSELIO_AREA_EXPORT
   bool area_maps_enabled_ = false, outputs_closed_ = false;
   double area_radius_m_ = 80, area_step_m_ = 20;
   int64_t area_interval_ns_ = 10000000000LL, area_first_ns_ = 0, area_last_ns_ = 0, area_next_id_ = 0;
   V3D area_last_center_ = V3D::Zero();
   std::vector<int64_t> scan_times_;
   std::ofstream diagnostics_;
-  std::unique_ptr<ResearchExport> area_export_;
+  std::unique_ptr<SnapshotWriter> area_export_;
   std::string area_robot_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr mapping_finish_;
   void ConfigureAreaExports();
   void CloseMappingOutputs();
   void RecordNativeUpdate(double core_time, double export_time);
   std::vector<int> SelectAreaPoints(const V3D& center, const V3D& up) const;
-  ResearchExport::Packet AreaSnapshot(const std::string& reason);
+  SnapshotWriter::Packet AreaSnapshot(const std::string& reason);
   void MaybeExportArea(bool shutdown = false);
 #endif
 

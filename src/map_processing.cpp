@@ -1021,7 +1021,7 @@ MappingNode::MappingNode(
     throw std::invalid_argument("Updated upstream odometry requires persistent-map matching; area maps are export-only");
   if (this->declare_parameter<bool>("research.enabled", false))
     throw std::invalid_argument("The separate research deskew exporter is unavailable in this upstream integration");
-#ifdef ELLIPSELIO_RESEARCH_EXPORT
+#ifdef ELLIPSELIO_AREA_EXPORT
   ConfigureAreaExports();
 #else
   if (this->declare_parameter<bool>("mapping.area_maps.enabled", false))
@@ -1194,7 +1194,7 @@ MappingNode::MappingNode(
       this, this->get_clock(),
       std::chrono::milliseconds(std::max(1000 / imu_params_.rate, 10)),
       std::bind(&MappingNode::TimerCallback, this), loop_callback_group_);
-#ifdef ELLIPSELIO_RESEARCH_EXPORT
+#ifdef ELLIPSELIO_AREA_EXPORT
   mapping_finish_ = this->create_service<std_srvs::srv::Trigger>(
       node_namespace_.empty() ? "/mapping/finish" : "/" + node_namespace_ + "/mapping/finish",
       [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
@@ -1244,7 +1244,7 @@ MappingNode::MappingNode(
 }
 
 MappingNode::~MappingNode() {
-#ifdef ELLIPSELIO_RESEARCH_EXPORT
+#ifdef ELLIPSELIO_AREA_EXPORT
   try { CloseMappingOutputs(); }
   catch (const std::exception& e) { RCLCPP_ERROR(get_logger(), "Area export shutdown failed: %s", e.what()); }
 #endif
@@ -1492,7 +1492,7 @@ void MappingNode::TimerCallback() {
     t3 = omp_get_wtime();
 
     map_mutex_.lock();
-#ifdef ELLIPSELIO_RESEARCH_EXPORT
+#ifdef ELLIPSELIO_AREA_EXPORT
     if (area_maps_enabled_ && map_cloud_->size()+scan_cloud_->size()>kMaxMapPoints)
       throw std::runtime_error("Persistent native map capacity exceeded; refusing to discard history");
 #endif
@@ -1500,7 +1500,7 @@ void MappingNode::TimerCallback() {
     map_mutex_.unlock();
 
     t4 = omp_get_wtime();
-#ifdef ELLIPSELIO_RESEARCH_EXPORT
+#ifdef ELLIPSELIO_AREA_EXPORT
     const double core_time = t4-t1;
     scan_times_.push_back(scan_end_time_.nanoseconds());
     if (!area_first_ns_) area_first_ns_=scan_times_.back();
@@ -1546,7 +1546,7 @@ void MappingNode::TimerCallback() {
       analytics_msg_.total_max = max_total_time_;
     }
 
-#ifdef ELLIPSELIO_RESEARCH_EXPORT
+#ifdef ELLIPSELIO_AREA_EXPORT
     RecordNativeUpdate(core_time,export_time);
 #endif
     odom_mutex_.lock();

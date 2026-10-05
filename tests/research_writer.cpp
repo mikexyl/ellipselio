@@ -1,4 +1,4 @@
-#include "research_export.h"
+#include <submap_slam_io/snapshot_writer.hpp>
 #include <sys/resource.h>
 #include <cassert>
 #include <chrono>
@@ -9,9 +9,9 @@ int main(int argc,char** argv) {
   struct rusage before{},after{};
   getrusage(RUSAGE_SELF,&before);
   const auto start=std::chrono::steady_clock::now();
-  ResearchExport writer(argv[1],argv[2],argv[3],2);
+  SnapshotWriter writer(argv[1],argv[2],argv[3],2);
   for (int i=0;i<80;++i) {
-    ResearchExport::Packet packet;
+    SnapshotWriter::Packet packet;
     packet.metadata={{"sequence",i},{"size",1024*1024}};
     packet.messages.emplace_back(1024*1024,uint8_t(i));
     writer.enqueue(std::move(packet));

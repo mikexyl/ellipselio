@@ -65,12 +65,12 @@ set(dependencies
 )
 
 ament_auto_add_library(ellipselio_mapping SHARED src/map_processing.cpp src/lidar_processing.cpp src/imu_processing.cpp src/cam_processing.cpp)
-if(S3E_RESEARCH_SOURCE)
-  find_package(nlohmann_json REQUIRED)
-  target_sources(ellipselio_mapping PRIVATE src/area_maps.cpp src/area_export.cpp "${S3E_RESEARCH_SOURCE}/src/research_export.cpp")
-  target_include_directories(ellipselio_mapping PRIVATE "${S3E_RESEARCH_SOURCE}/include")
-  target_link_libraries(ellipselio_mapping nlohmann_json::nlohmann_json)
-  target_compile_definitions(ellipselio_mapping PRIVATE ELLIPSELIO_RESEARCH_EXPORT)
+option(ELLIPSELIO_AREA_EXPORT "Export accumulated map observations" ON)
+if(ELLIPSELIO_AREA_EXPORT)
+  find_package(submap_slam_io REQUIRED)
+  target_sources(ellipselio_mapping PRIVATE src/area_maps.cpp src/area_export.cpp)
+  target_link_libraries(ellipselio_mapping submap_slam::io)
+  target_compile_definitions(ellipselio_mapping PRIVATE ELLIPSELIO_AREA_EXPORT)
   # Keep upstream estimator flags; serialize and validate exports with IEEE finite checks.
   set_source_files_properties(src/area_maps.cpp src/area_export.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math")
 endif()
@@ -93,12 +93,16 @@ PLUGIN "ellipselio::MappingNode"
 EXECUTABLE ellipselio_mapping_node
 )
 
+add_executable(ellipselio_mapping_mt src/node_main.cpp)
+target_link_libraries(ellipselio_mapping_mt ellipselio_mapping)
+ament_target_dependencies(ellipselio_mapping_mt rclcpp rclcpp_components)
+install(TARGETS ellipselio_mapping_mt DESTINATION lib/${PROJECT_NAME})
 ament_auto_package(USE_SCOPED_HEADER_INSTALL_DIR INSTALL_TO_SHARE
 launch
 rviz
 config
 )
-if(BUILD_TESTING AND S3E_RESEARCH_SOURCE)
+if(BUILD_TESTING AND ELLIPSELIO_AREA_EXPORT)
   enable_testing()
   add_executable(octree_growth_test tests/octree_growth.cpp)
   target_compile_options(octree_growth_test PRIVATE -UNDEBUG -fno-fast-math)
@@ -106,15 +110,13 @@ if(BUILD_TESTING AND S3E_RESEARCH_SOURCE)
   add_test(NAME octree_growth COMMAND octree_growth_test)
   add_executable(area_maps_test tests/area_maps.cpp)
   target_compile_options(area_maps_test PRIVATE -UNDEBUG -fno-fast-math)
-  target_compile_definitions(area_maps_test PRIVATE ELLIPSELIO_RESEARCH_EXPORT)
-  target_include_directories(area_maps_test PRIVATE "${S3E_RESEARCH_SOURCE}/include")
-  target_link_libraries(area_maps_test ellipselio_mapping)
+  target_compile_definitions(area_maps_test PRIVATE ELLIPSELIO_AREA_EXPORT)
+  target_link_libraries(area_maps_test ellipselio_mapping submap_slam::io)
   ament_target_dependencies(area_maps_test ${dependencies})
   add_test(NAME accumulated_area_maps COMMAND area_maps_test)
   add_executable(submap_writer_test tests/research_writer.cpp)
   target_compile_options(submap_writer_test PRIVATE -UNDEBUG)
-  target_link_libraries(submap_writer_test ellipselio_mapping)
-  target_include_directories(submap_writer_test PRIVATE "${S3E_RESEARCH_SOURCE}/include")
+  target_link_libraries(submap_writer_test ellipselio_mapping submap_slam::io)
   ament_target_dependencies(submap_writer_test rclcpp)
   add_test(NAME bounded_submap_writer COMMAND submap_writer_test /usr/bin/python3
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/slow_writer.py" "${CMAKE_CURRENT_BINARY_DIR}/writer-test.json")

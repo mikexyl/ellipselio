@@ -1,7 +1,7 @@
 #include "map_processing.h"
 #include <set>
 
-#ifdef ELLIPSELIO_RESEARCH_EXPORT
+#ifdef ELLIPSELIO_AREA_EXPORT
 namespace ellipselio {
 std::vector<int> MappingNode::SelectAreaPoints(const V3D& center, const V3D& up) const {
   if (!center.allFinite() || !up.allFinite() || std::abs(up.norm()-1.)>1e-8)
@@ -17,15 +17,15 @@ std::vector<int> MappingNode::SelectAreaPoints(const V3D& center, const V3D& up)
   return ids;
 }
 
-ResearchExport::Packet MappingNode::AreaSnapshot(const std::string& reason) {
+SnapshotWriter::Packet MappingNode::AreaSnapshot(const std::string& reason) {
   const auto& state=kf_state_.state;
   const V3D up=-state.grav.get_vect().normalized();
   const auto ids=SelectAreaPoints(state.pos,up);
   const M3D rotation=state.rot.toRotationMatrix();
   const M3F R=rotation.transpose().cast<float>();
   const V3F t=state.pos.cast<float>();
-  std::vector<float> geometry,ellipsoids;
-  std::vector<int32_t> point_ids,scan_ids,ellipsoid_ids;
+  std::vector<float> geometry;
+  std::vector<int32_t> point_ids,scan_ids;
   std::set<int> scans;
   std::vector<std::vector<int>> ranges;
   geometry.reserve(3*ids.size());
@@ -38,15 +38,7 @@ ResearchExport::Packet MappingNode::AreaSnapshot(const std::string& reason) {
     point_ids.push_back(i);scan_ids.push_back(point.scan_idx);scans.insert(point.scan_idx);
     if (ranges.empty() || ranges.back()[1]!=i) ranges.push_back({i,i+1});
     else ranges.back()[1]=i+1;
-    if (!filters_[i][1]) continue;
-    const auto& axes=eigenvalues_[i];
-    const M3F basis=R*eigenvectors_[i];
-    if (!axes.allFinite() || !basis.allFinite() || axes.minCoeff()<=0)
-      throw std::runtime_error("Invalid accumulated ellipsoid");
-    ellipsoid_ids.push_back(i);
-    ellipsoids.insert(ellipsoids.end(),q.data(),q.data()+3);
-    ellipsoids.insert(ellipsoids.end(),axes.data(),axes.data()+3);
-    for (int r=0;r<3;++r) for (int c=0;c<3;++c) ellipsoids.push_back(basis(r,c));
+
   }
   std::vector<double> pose(16,0);
   for (int r=0;r<3;++r) {
@@ -57,10 +49,10 @@ ResearchExport::Packet MappingNode::AreaSnapshot(const std::string& reason) {
   // SyncPackages may already have staged the next unprocessed scan at shutdown.
   const auto sensor_ns=scan_times_.back(), pose_ns=kf_state_.time.nanoseconds();
   const V3D gravity_world=state.grav.get_vect(),gravity_imu=rotation.transpose()*gravity_world;
-  ResearchExport::Packet packet;
-  packet.metadata={{"schema_version",5},{"strategy","area"},{"robot_id",area_robot_},
+  SnapshotWriter::Packet packet;
+  packet.metadata={{"schema_version",7},{"strategy","area"},{"robot_id",area_robot_},
     {"submap_id",area_next_id_},{"keyframe_id",area_next_id_},{"complete",true},
-    {"retrievable",!ellipsoid_ids.empty()},{"finish_reason",reason},
+    {"retrievable",!point_ids.empty()},{"finish_reason",reason},
     {"member_scan_ids",std::vector<int>(scans.begin(),scans.end())},
     {"membership_semantics","origins of selected persistent map representatives; not consecutive scans"},
     {"geometry_id_ranges",ranges},{"archive_point_count",map_cloud_->size()},
@@ -77,14 +69,13 @@ ResearchExport::Packet MappingNode::AreaSnapshot(const std::string& reason) {
     {"area_shape","horizontal_disk_unbounded_height"},{"age_limit_s",nullptr},
     {"geometry_source","all stored native accumulated-map representatives inside area; not full-resolution raw geometry"},
     {"odometry_map_source","persistent_map"},
-    {"ellipsoid_support","native persistent-map tensor neighborhoods; selected by center, surface clipped to area"},
-    {"geometry_count",point_ids.size()},{"ellipsoid_count",ellipsoid_ids.size()}};
+    {"geometry_count",point_ids.size()}};
   auto add=[&packet](const auto& values) {
     using T=typename std::decay_t<decltype(values)>::value_type;
     packet.messages.emplace_back(values.size()*sizeof(T));
     if (!values.empty()) std::memcpy(packet.messages.back().data(),values.data(),values.size()*sizeof(T));
   };
-  add(geometry);add(ellipsoids);add(point_ids);add(scan_ids);add(ellipsoid_ids);
+  add(geometry);add(point_ids);add(scan_ids);
   return packet;
 }
 
