@@ -1377,6 +1377,20 @@ void MappingNode::SyncRawCloudWithImu() {
     }
   }
 
+  // Buffered and newly received scans are each grouped by range, but their
+  // concatenation (and parallel time clipping) is not. Registration and map
+  // insertion both use contiguous bin slices, so restore that invariant.
+  std::stable_sort(scan_cloud_->points.begin(), scan_cloud_->points.end(),
+                   [](const EllipseLioPoint& a, const EllipseLioPoint& b) {
+                     return a.bin_idx < b.bin_idx;
+                   });
+  scan_cloud_bins_.setZero();
+  for (const auto& point : scan_cloud_->points) {
+    if (point.bin_idx < 0 || point.bin_idx >= scan_cloud_bins_.size())
+      throw std::runtime_error("Invalid range bin in assembled scan");
+    ++scan_cloud_bins_[point.bin_idx];
+  }
+
   bin_score = start_bin_ / kMaxStartBin;
   if (start_mean_cnt_ < 0) {
     mean_score_wt_.col(4) += fmin(fmax(bin_score, 1e-4), 1.0);
