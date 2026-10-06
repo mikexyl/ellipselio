@@ -49,8 +49,8 @@ void MappingNode::RecordNativeUpdate(double core_time,double export_time) {
   int offset=0, mismatches=0;
   for(int bin=0;bin<scan_cloud_bins_.size();++bin)
     for(int i=0;i<scan_cloud_bins_[bin];++i,++offset)
-      if(offset>=static_cast<int>(scan_cloud_->size()) || scan_cloud_->points[offset].bin_idx!=bin) ++mismatches;
-  row["range_slice_mismatches"]=mismatches;
+      if(offset>=static_cast<int>(scan_cloud_->size()) || scan_cloud_->points[offset].bin_idx!=std::max(bin,start_bin_)) ++mismatches;
+  row["effective_range_slice_mismatches"]=mismatches;
   row["range_slice_total"]=offset;
   row["scan_points"]=scan_cloud_->size();
   row["scan_start_ns"]=scan_start_time_.nanoseconds();
