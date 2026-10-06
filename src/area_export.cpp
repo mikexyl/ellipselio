@@ -46,6 +46,20 @@ void MappingNode::RecordNativeUpdate(double core_time,double export_time) {
     {"features",analytics_msg_.num_feats},{"num_feats",analytics_msg_.num_feats},{"residual",analytics_msg_.res_mean},
     {"processing_s",core_time+export_time},{"core_processing_s",core_time},{"snapshot_s",export_time},
     {"pose",{s.pos.x(),s.pos.y(),s.pos.z(),s.rot.coeffs()[0],s.rot.coeffs()[1],s.rot.coeffs()[2],s.rot.coeffs()[3]}}};
+  int offset=0, mismatches=0;
+  for(int bin=0;bin<scan_cloud_bins_.size();++bin)
+    for(int i=0;i<scan_cloud_bins_[bin];++i,++offset)
+      if(offset>=static_cast<int>(scan_cloud_->size()) || scan_cloud_->points[offset].bin_idx!=bin) ++mismatches;
+  row["range_slice_mismatches"]=mismatches;
+  row["range_slice_total"]=offset;
+  row["scan_points"]=scan_cloud_->size();
+  row["scan_start_ns"]=scan_start_time_.nanoseconds();
+  row["imu_buffer_start_ns"]=imu_start_time_.nanoseconds();
+  row["imu_buffer_end_ns"]=imu_end_time_.nanoseconds();
+  row["buffer_points"]=buffer_cloud_->size();
+  row["velocity"]={s.vel.x(),s.vel.y(),s.vel.z()};
+  row["gyro_bias"]={s.bg.x(),s.bg.y(),s.bg.z()};
+  row["gravity"]={s.grav.get_vect().x(),s.grav.get_vect().y(),s.grav.get_vect().z()};
   diagnostics_<<row.dump()<<'\n'; diagnostics_.flush();
   if (!diagnostics_) throw std::runtime_error("Native update log write failed");
 }

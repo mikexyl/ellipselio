@@ -115,6 +115,7 @@ void ImuProcess::Process(const sensor_msgs::msg::Imu::SharedPtr msg) {
 
 void ImuProcess::InitImu(const sensor_msgs::msg::Imu::SharedPtr msg) {
   if (b_first_frame_) {
+    RCLCPP_INFO(node_->get_logger(), "Startup first IMU stamp=%ld", rclcpp::Time(msg->header.stamp).nanoseconds());
     init_iter_num_ = 1;
     b_first_frame_ = false;
     const auto& imu_acc = msg->linear_acceleration;
@@ -138,6 +139,8 @@ void ImuProcess::InitImu(const sensor_msgs::msg::Imu::SharedPtr msg) {
     imu_need_init_ = false;
     mean_acc_ /= init_iter_num_;
     mean_gyr_ /= init_iter_num_;
+    RCLCPP_INFO(node_->get_logger(), "Startup IMU initialized stamp=%ld samples=%d acc=[%.12g,%.12g,%.12g] gyro=[%.12g,%.12g,%.12g]",
+                rclcpp::Time(msg->header.stamp).nanoseconds(), init_iter_num_, mean_acc_.x(), mean_acc_.y(), mean_acc_.z(), mean_gyr_.x(), mean_gyr_.y(), mean_gyr_.z());
 
     kf_state_.time = rclcpp::Time(msg->header.stamp);
 
