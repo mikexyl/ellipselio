@@ -1507,7 +1507,8 @@ void MappingNode::TimerCallback() {
     const double core_time = t4-t1;
     scan_times_.push_back(scan_end_time_.nanoseconds());
     if (!area_first_ns_) area_first_ns_=scan_times_.back();
-    { std::lock_guard<std::mutex> lock(map_mutex_); MaybeExportArea(); }
+    if (fresh_observations_) ExportProcessedScan();
+    else { std::lock_guard<std::mutex> lock(map_mutex_); MaybeExportArea(); }
     const double export_time = omp_get_wtime()-t4;
     t4 = omp_get_wtime();
 #endif

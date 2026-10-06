@@ -74,6 +74,12 @@ class MappingNode : public rclcpp::Node {
   std::ofstream diagnostics_;
   std::unique_ptr<SnapshotWriter> area_export_;
   std::string area_robot_;
+  bool fresh_observations_ = false;
+  int64_t observation_next_id_ = 0, observation_chunk_id_ = 0;
+  int64_t observation_first_ns_ = 0, observation_watermark_ns_ = 0;
+  std::vector<float> observation_xyz_;
+  std::vector<int64_t> observation_ids_, observation_scans_, observation_times_;
+  nlohmann::json observation_poses_ = nlohmann::json::array();
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr mapping_finish_;
   void ConfigureAreaExports();
   void CloseMappingOutputs();
@@ -81,6 +87,8 @@ class MappingNode : public rclcpp::Node {
   std::vector<int> SelectAreaPoints(const V3D& center, const V3D& up) const;
   SnapshotWriter::Packet AreaSnapshot(const std::string& reason);
   void MaybeExportArea(bool shutdown = false);
+  void ExportProcessedScan();
+  void FlushProcessedScans();
 #endif
 
   /**
