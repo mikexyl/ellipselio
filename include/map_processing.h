@@ -76,7 +76,7 @@ class MappingNode : public rclcpp::Node {
   std::string area_robot_;
   bool fresh_observations_ = false;
   int64_t observation_next_id_ = 0, observation_chunk_id_ = 0;
-  int64_t observation_first_ns_ = 0, observation_watermark_ns_ = 0;
+  int64_t observation_first_ns_ = 0, observation_watermark_ns_ = 0, observation_last_sensor_ns_ = 0;
   std::vector<float> observation_xyz_;
   std::vector<int64_t> observation_ids_, observation_scans_, observation_times_;
   nlohmann::json observation_poses_ = nlohmann::json::array();

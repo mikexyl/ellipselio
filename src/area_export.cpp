@@ -41,7 +41,7 @@ void MappingNode::ExportProcessedScan() {
   // MapIncremental has transformed this scan exactly once, but has not removed
   // the returns rejected by persistent-map novelty filtering from scan_cloud_.
   const auto sensor_ns=scan_end_time_.nanoseconds();
-  if (!observation_poses_.empty() && sensor_ns<=observation_watermark_ns_)
+  if (observation_chunk_id_+observation_poses_.size()>0 && sensor_ns<=observation_last_sensor_ns_)
     throw std::runtime_error("Nonchronological processed observation stream");
   const auto& state=kf_state_.state;
   const M3D rotation=state.rot.toRotationMatrix();
@@ -51,7 +51,13 @@ void MappingNode::ExportProcessedScan() {
     pose[4*r+3]=state.pos[r];
   }
   if (observation_poses_.empty()) observation_first_ns_=sensor_ns;
+  // A scan end is not an acquisition watermark: adjacent LiDAR packets can
+  // overlap in time. SyncRawCloudWithImu clips every processed return to the
+  // monotonic IMU history lower bound. Future scans cannot retain older data.
+  const int64_t floor_ns=imu_start_time_.nanoseconds();
+  if (floor_ns<observation_watermark_ns_) throw std::runtime_error("Regressing observation watermark");
   observation_poses_.push_back({{"scan_id",map_counter_},{"sensor_stamp_ns",sensor_ns},
+    {"scan_start_ns",scan_start_time_.nanoseconds()},{"acquisition_floor_ns",floor_ns},
     {"stamp_ns",kf_state_.time.nanoseconds()},{"T_world_imu",pose}});
   for (const auto& point:scan_cloud_->points) {
     const auto p=point.getVector3fMap();
@@ -62,7 +68,7 @@ void MappingNode::ExportProcessedScan() {
     observation_ids_.push_back(observation_next_id_++);
     observation_scans_.push_back(map_counter_); observation_times_.push_back(ns);
   }
-  observation_watermark_ns_=sensor_ns;
+  observation_watermark_ns_=floor_ns; observation_last_sensor_ns_=sensor_ns;
   // Time and point limits bound a packet independently of bag duration.
   if (sensor_ns-observation_first_ns_>=1000000000LL || observation_ids_.size()>=1000000)
     FlushProcessedScans();
@@ -72,10 +78,11 @@ void MappingNode::FlushProcessedScans() {
   if (!area_export_ || observation_poses_.empty()) return;
   const V3D gravity=kf_state_.state.grav.get_vect();
   SnapshotWriter::Packet packet;
-  packet.metadata={{"schema_version",1},{"strategy","processed_scans"},
+  packet.metadata={{"schema_version",2},{"strategy","processed_scans"},
     {"robot_id",area_robot_},{"submap_id",observation_chunk_id_++},{"complete",true},
     {"geometry_count",observation_ids_.size()},{"watermark_ns",observation_watermark_ns_},
-    {"available_ns",std::max(observation_watermark_ns_,kf_state_.time.nanoseconds())},
+    {"watermark_semantics","imu_history_lower_bound"},
+    {"available_ns",std::max(observation_last_sensor_ns_,kf_state_.time.nanoseconds())},
     {"frame","native_odom"},{"odometry_map_source","persistent_map"},
     {"scans",observation_poses_},{"gravity_world_m_s2",{gravity.x(),gravity.y(),gravity.z()}}};
   auto add=[&packet](const auto& values) {
