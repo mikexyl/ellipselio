@@ -1016,17 +1016,20 @@ MappingNode::MappingNode(
                                                std::vector<double>());
 
   this->declare_parameter<bool>("input.reliable", false);
-  if (this->declare_parameter<bool>("mapping.submaps.enabled", false) ||
-      this->declare_parameter<bool>("mapping.area_maps.odometry", false))
-    throw std::invalid_argument("Updated upstream odometry requires persistent-map matching; area maps are export-only");
   if (this->declare_parameter<bool>("research.enabled", false))
     throw std::invalid_argument("The separate research deskew exporter is unavailable in this upstream integration");
 #ifdef ELLIPSELIO_AREA_EXPORT
   ConfigureAreaExports();
 #else
   if (this->declare_parameter<bool>("mapping.area_maps.enabled", false))
-    throw std::invalid_argument("Build with S3E_RESEARCH_SOURCE for area-map export");
+    throw std::invalid_argument("Build with ELLIPSELIO_AREA_EXPORT for area-map export");
 #endif
+  // Reject unknown mapping settings rather than silently accepting a retired
+  // mode or a misspelled option. Odometry always uses the persistent native map.
+  for (const auto& entry : this->get_node_parameters_interface()->get_parameter_overrides()) {
+    if (entry.first.rfind("mapping.", 0) == 0 && !this->has_parameter(entry.first))
+      throw std::invalid_argument("Unknown mapping parameter: " + entry.first);
+  }
   this->declare_parameter<int>("cameras.num_cams", 0);
   this->declare_parameter<std::string>("cameras.transport", "raw");
   this->declare_parameter<std::vector<long int>>("cameras.frame_rates",

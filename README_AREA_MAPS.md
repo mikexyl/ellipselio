@@ -1,39 +1,35 @@
-# Updated EllipseLIO with accumulated-area exports
+# Persistent-map odometry with observation exports
 
-This branch is based on upstream `6506f46f1947b4ef86cfba402f11f10a6ef520ee`.
-It retains persistent-map odometry and adds export-only accumulated-area snapshots,
-reliable sensor input, native update diagnostics, and stable-block octree growth.
-It rejects enabled temporal submapping, area-cropped odometry, and the separate
-research deskew exporter. The original temporal-submap implementation remains on
-`dev/multi-robot-lidar-slam-submaps`.
+This integration is based on upstream
+`6506f46f1947b4ef86cfba402f11f10a6ef520ee`. Odometry always matches against its
+persistent native map. There are no temporal windows, successor maps, handovers,
+or area-cropped odometry modes.
 
-Use this branch (`dev/upstream-ellipselio-octree-growth`) with
-[FAST-LIVO2-ROS2](https://github.com/mikexyl/FAST-LIVO2-ROS2/tree/dev/multi-robot-lidar-slam-submaps).
-Build with `-DS3E_RESEARCH_SOURCE=/absolute/path/to/FAST-LIVO2-ROS2`; that repository
-provides the bounded export writer in `include/research_export.h` and
-`src/research_export.cpp`. With the normal ROS2 dependencies installed:
+Bounded accumulated-area exports provide point observations to
+[submap_slam](https://github.com/mikexyl/submap_slam). That package creates the
+fixed circle submaps used by MapClosures and CBS. The exported areas do not
+restrict the odometry map or its correspondences.
 
-```sh
-colcon build --packages-select ellipselio --cmake-args \
-  -DS3E_RESEARCH_SOURCE=/absolute/path/to/FAST-LIVO2-ROS2 -DBUILD_TESTING=ON
-ctest --test-dir build/ellipselio --output-on-failure
-```
+Build against the installed `submap_slam_io` package with
+`-DELLIPSELIO_AREA_EXPORT=ON`. The maintained deployment instructions and
+four-thread launcher are in `submap_slam`; no FAST-LIVO2 source is required.
 
-Enable `mapping.area_maps.enabled`, keep `mapping.submaps.enabled` and
-`mapping.area_maps.odometry` false, and use the wrapper's
-`scripts/recent_submaps/run_trial.py --area-maps --persistent-odometry` launcher.
-The tested defaults export all native map representatives within an 80 m
-horizontal radius every 20 m or 10 s, without restricting point age or height.
-Snapshots and ellipsoids use the current IMU anchor frame. They contain processed
-map geometry, not full-resolution raw scans; tensor support remains the native
-persistent-map support. Shutdown tails are saved for inspection.
+Enable `mapping.area_maps.enabled` to export native map representatives within
+an 80 m horizontal radius every 20 m or 10 s. Observation exports do not restrict
+point age or height. Saved points use the current IMU anchor frame and contain
+processed map geometry. The backend planner independently uses 40 m circles.
+The existing snapshot identifiers and frame/timestamp metadata are preserved
+for artifact readers.
 
-Octree leaf backing storage grows in blocks without relocating existing pointers.
-The remaining native point-capacity check still fails explicitly rather than
-silently discarding history. No correspondence or optimizer thresholds change.
+The integration also provides reliable sensor input, essential native update
+telemetry, and stable-block octree growth. Octree leaf storage grows without
+relocating existing pointers. The native point-capacity check fails explicitly
+rather than discarding history. Correspondence and optimizer thresholds remain
+unchanged.
 
-Validation includes octree growth/deletion, area membership and anchor transforms,
-state/covariance preservation, immutable packets, bounded-writer backpressure and
-shutdown, plus fresh full-length runs of all eight GRACO aerial and six ground
-sequences. The wrapper contains the associated multilayer BEV/MapClosures/PCM/CBS
-tests, reports, configuration and artifact hashes.
+Unknown mapping parameters are rejected. Retired odometry-mode settings are
+not declared or accepted, including when set to false.
+
+Native tests cover octree growth, area membership, anchor transforms, immutable
+packets, state/covariance preservation, rejected unknown mapping parameters,
+bounded-writer backpressure and shutdown.

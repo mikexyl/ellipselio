@@ -42,9 +42,14 @@ struct AreaMapTest {
   const auto immutable=packet.messages;n->map_cloud_->points[0].x+=1000;assert(packet.messages==immutable);
   n->map_cloud_->points[0].x=std::numeric_limits<float>::quiet_NaN();
   bool rejected=false;try{n->SelectAreaPoints(before,V3D::UnitZ());}catch(const std::runtime_error&){rejected=true;}assert(rejected);
-  for(const auto& setting:{"mapping.submaps.enabled","mapping.area_maps.odometry"}) {
-    auto invalid=options;invalid.append_parameter_override(setting,true);rejected=false;
-    try{auto other=std::make_shared<MappingNode>(invalid);}catch(const std::invalid_argument&){rejected=true;}assert(rejected);
+  for(const auto& setting:{"mapping.submaps.enabled","mapping.area_maps.odometry","mapping.misspelled_option"}) {
+    assert(!n->has_parameter(setting));
+    for(bool value:{false,true}) {
+      auto invalid=options;invalid.append_parameter_override(setting,value);rejected=false;
+      try{auto other=std::make_shared<MappingNode>(invalid);}
+      catch(const std::invalid_argument& e){rejected=std::string(e.what())==std::string("Unknown mapping parameter: ")+setting;}
+      assert(rejected);
+    }
   }
   std::cout<<"Export-only area membership, all ages/heights, boundary, return visits, anchor transforms, immutable packets, unchanged state/covariance, nonfinite rejection and odometry-policy checks passed\n";
  }
