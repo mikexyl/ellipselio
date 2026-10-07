@@ -67,6 +67,13 @@ class MappingNode : public rclcpp::Node {
   friend struct AreaMapTest;
 #ifdef ELLIPSELIO_AREA_EXPORT
   bool area_maps_enabled_ = false, outputs_closed_ = false;
+  bool fresh_observations_ = false;
+  int64_t observation_next_id_ = 0, observation_begin_ns_ = 0;
+  std::vector<float> observation_xyz_;
+  std::vector<int64_t> observation_ids_, observation_times_;
+  std::vector<int32_t> observation_scans_;
+  nlohmann::json observation_metadata_ = nlohmann::json::array();
+  void ExportFreshObservations(bool shutdown = false);
   double area_radius_m_ = 80, area_step_m_ = 20;
   int64_t area_interval_ns_ = 10000000000LL, area_first_ns_ = 0, area_last_ns_ = 0, area_next_id_ = 0;
   V3D area_last_center_ = V3D::Zero();
