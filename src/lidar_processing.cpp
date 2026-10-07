@@ -113,6 +113,7 @@ void LidarProcess::LidarCallback(
 void LidarProcess::Process(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
   auto& clk = *node_->get_clock();
 
+  ClearBins();
   switch (static_cast<LidType>(params_.type)) {
     case LidType::kLivox:
       PointCloudHandler<LivoxPoint>(msg);
@@ -193,6 +194,16 @@ void LidarProcess::Process(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
       lidar_end_time_ = std::max(lidar_end_time_, bin_max_times_[i]);
     }
   }
+  QueueProcessedCloud();
+}
+
+void LidarProcess::QueueProcessedCloud() {
+  if (ellipselio_pc_->empty()) return;
+  // Bounded ingestion: overload is a visible failure, never silent replacement.
+  if (pending_scans_.size() >= 32)
+    throw std::runtime_error("Processed LiDAR scan queue overflow");
+  pending_scans_.push_back({*ellipselio_pc_, bin_pcs_sizes_, lidar_start_time_,
+      lidar_end_time_, start_bin_, mean_bin_, lidar_time_offset_.seconds()});
   lidar_has_data_ = true;
 }
 
@@ -209,6 +220,7 @@ void LidarProcess::ClearBins() {
 void LidarProcess::ClearPointCloud() {
   lidar_mutex_.lock();
   ClearBins();
+  pending_scans_.clear();
   lidar_has_data_ = false;
   lidar_mutex_.unlock();
 }
@@ -217,22 +229,20 @@ bool LidarProcess::GetPointCloud(EllipseLioPointCloudPtr pc,
                                  rclcpp::Time* start_time,
                                  rclcpp::Time* end_time,
                                  Eigen::ArrayXi* bin_pcs_sizes, int* start_bin,
-                                 int* mean_bin) {
-  if (!lidar_has_data_) return false;
-
-  lidar_mutex_.lock();
-  *mean_bin = mean_bin_;
-  *start_bin = start_bin_;
-  if (pc->empty()) {
-    *start_time = lidar_start_time_;
-  }
-  *end_time = lidar_end_time_;
-  *pc += *ellipselio_pc_;
-  *bin_pcs_sizes += bin_pcs_sizes_;
-  ClearBins();
-  lidar_has_data_ = false;
-  lidar_mutex_.unlock();
-
+                                 int* mean_bin, double* time_offset) {
+  std::lock_guard<std::mutex> lock(lidar_mutex_);
+  if (pending_scans_.empty()) return false;
+  if (!pc->empty()) throw std::logic_error("Cannot append to an unconsumed scan");
+  auto& packet = pending_scans_.front();
+  *start_time = packet.start;
+  *end_time = packet.end;
+  *start_bin = packet.start_bin;
+  *mean_bin = packet.mean_bin;
+  *time_offset = packet.time_offset;
+  *bin_pcs_sizes = packet.bins;
+  *pc = std::move(packet.cloud);
+  pending_scans_.pop_front();
+  lidar_has_data_ = !pending_scans_.empty();
   return true;
 }
 

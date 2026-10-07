@@ -10,6 +10,7 @@
 #define LIDAR_PROCESSING_H_
 
 #include <rclcpp/rclcpp.hpp>
+#include <deque>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
 #include "common_lib.h"
@@ -89,7 +90,7 @@ class LidarProcess {
    */
   bool GetPointCloud(EllipseLioPointCloudPtr pc, rclcpp::Time* start_time,
                      rclcpp::Time* end_time, Eigen::ArrayXi* bin_pcs_sizes,
-                     int* start_bin, int* mean_bin);
+                     int* start_bin, int* mean_bin, double* time_offset);
 
   /// @brief Number of range bins used for organization
   int num_bins_;
@@ -130,6 +131,16 @@ class LidarProcess {
   std::vector<float> octree_resolutions_;
 
  private:
+  friend struct LidarQueueTest;
+  struct ProcessedScan {
+    EllipseLioPointCloud cloud;
+    Eigen::ArrayXi bins;
+    rclcpp::Time start, end;
+    int start_bin, mean_bin;
+    double time_offset;
+  };
+  std::deque<ProcessedScan> pending_scans_;
+  void QueueProcessedCloud();
   /**
    * @brief ROS 2 callback for point cloud reception.
    * @param msg_in Incoming PointCloud2 message

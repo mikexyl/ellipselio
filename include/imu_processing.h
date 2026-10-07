@@ -163,7 +163,8 @@ class ImuProcess {
 
   /// @brief Counter of received IMU measurements
   std::atomic<int> imu_counter_;
-  bool imu_has_data_, lidar_ready_;
+  bool imu_has_data_;
+  std::atomic<bool> lidar_ready_;
   rclcpp::Time imu_start_time_, imu_end_time_;
   Eigen::Matrix<double, 12, 12> q_;
 

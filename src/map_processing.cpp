@@ -1,94 +1,32 @@
 #include "map_processing.h"
 #include "range_bins.h"
+#include "scan_readiness.h"
 
 namespace ellipselio {
 
 bool MappingNode::SyncPackages() {
-  double velocity;
-  bool got_lidar_data;
-  KfState latest_state;
-
   auto& clk = *this->get_clock();
-  double lidar_scan_time = 1.0 / lidar_params_.rate;
-  double inter_sync_time = omp_get_wtime() - last_sync_time_;
-  rclcpp::Duration lidar_scan_duration(0, 1e9 * lidar_scan_time);
-
-  if (!last_sync_time_) {
-    RCLCPP_INFO_THROTTLE(this->get_logger(), clk, 1000, "Waiting for data...");
-  }
-  if (!lid_process_->lidar_has_data_ && buffer_cloud_->empty() &&
-      raw_cloud_->empty()) {
-    if (inter_sync_time > 1.0) {
-      RCLCPP_ERROR_THROTTLE(this->get_logger(), clk, 1000,
-                            "Lidar has no new data");
-    }
+  const double inter_sync_time = omp_get_wtime() - last_sync_time_;
+  // One immutable packet at a time. IMU callback timing cannot split or merge it.
+  if (raw_cloud_->empty() &&
+      !lid_process_->GetPointCloud(raw_cloud_, &raw_start_time_, &raw_end_time_,
+          &raw_cloud_bins_, &start_bin_, &mean_bin_, &lid_time_offset_)) {
     return false;
   }
   imu_process_->lidar_ready_ = true;
-  if (imu_process_->imu_end_time_ <= last_imu_time_) {
-    if (inter_sync_time > 1.0) {
-      RCLCPP_ERROR_THROTTLE(this->get_logger(), clk, 1000,
-                            "IMU has no new data");
-    }
+  // The copied IMU interval is also the exact interval used by deskew.
+  imu_process_->SyncWithLidar(&imu_start_time_, &imu_end_time_);
+  const auto readiness = CompleteScanReadiness(raw_start_time_.nanoseconds(),
+      raw_end_time_.nanoseconds(), imu_start_time_.nanoseconds(),
+      imu_end_time_.nanoseconds(), map_counter_ > 0);
+  if (readiness == ScanReadiness::Wait) return false;
+  if (readiness == ScanReadiness::Expired)
+    throw std::runtime_error("Complete LiDAR scan expired from IMU history");
+  if (readiness == ScanReadiness::BeforeInitialization) {
+    raw_cloud_->clear();
+    raw_cloud_bins_.setZero();
     return false;
   }
-  for (int i = 0; i < num_cams_; i++) {
-    if (!cams_process_[i]->cam_has_data_) {
-      if (inter_sync_time > 1.0) {
-        RCLCPP_ERROR_STREAM_THROTTLE(this->get_logger(), clk, 1000,
-                                     "Camera " << i << " has no new data");
-      }
-    }
-  }
-  if (lid_process_->lidar_start_time_ < imu_process_->imu_start_time_) {
-    lid_process_->ClearPointCloud();
-    RCLCPP_ERROR_STREAM_THROTTLE(this->get_logger(), clk, 1000,
-                                 "Lidar start time is before IMU start time");
-    return false;
-  }
-
-  got_lidar_data =
-      lid_process_->GetPointCloud(raw_cloud_, &raw_start_time_, &raw_end_time_,
-                                  &raw_cloud_bins_, &start_bin_, &mean_bin_);
-
-  if (raw_cloud_->empty() && buffer_cloud_->empty()) {
-    if (inter_sync_time > lidar_scan_time) {
-      RCLCPP_ERROR_STREAM_THROTTLE(this->get_logger(), clk, 1000,
-                                   "No synced measurements");
-    }
-    return false;
-  }
-
-  imu_start_time_ = imu_process_->imu_start_time_;
-  imu_end_time_ = imu_process_->imu_end_time_;
-  last_imu_time_ = imu_process_->imu_end_time_;
-
-  scan_start_time_ = buffer_start_time_;
-  scan_end_time_ = raw_end_time_;
-
-  if (buffer_cloud_->empty()) {
-    scan_start_time_ = raw_start_time_;
-  }
-  if (raw_cloud_->empty()) {
-    scan_end_time_ = buffer_end_time_;
-  }
-  if (imu_start_time_ > scan_start_time_) {
-    scan_start_time_ = imu_start_time_;
-    RCLCPP_ERROR_STREAM(this->get_logger(),
-                        "IMU start time later than scan start time");
-    buffer_cloud_->clear();
-    return false;
-  }
-  if (scan_end_time_ - scan_start_time_ < lidar_scan_duration) {
-    if (!buffer_cloud_->empty() || scan_end_time_ > imu_end_time_) {
-      return false;
-    }
-  } else {
-    if (scan_start_time_ + lidar_scan_duration > imu_end_time_) {
-      return false;
-    }
-  }
-
   SyncRawCloudWithImu();
 
   int cur_imu_freq = round(imu_process_->imu_counter_ / inter_sync_time);
@@ -1317,71 +1255,12 @@ void MappingNode::InitCamProcess() {
 }
 
 void MappingNode::SyncRawCloudWithImu() {
-  int total_size;
   float bin_score;
-  std::atomic<int> scan_idx = 0, filter_idx = 0;
-
   imu_time_offset_ = 0;
-  imu_process_->SyncWithLidar(&imu_start_time_, &imu_end_time_);
-  lid_time_offset_ = lid_process_->lidar_time_offset_.seconds();
-
-  if (!raw_cloud_->empty()) {
-    scan_start_time_ = raw_start_time_;
-    scan_end_time_ = raw_end_time_;
-  }
-  if (!buffer_cloud_->empty()) scan_start_time_ = buffer_start_time_;
-  if (imu_end_time_ > scan_end_time_ && imu_start_time_ < scan_start_time_) {
-    *scan_cloud_ = *buffer_cloud_;
-    *scan_cloud_ += *raw_cloud_;
-    scan_cloud_bins_ = buffer_cloud_bins_ + raw_cloud_bins_;
-    buffer_cloud_->clear();
-    buffer_cloud_bins_.setZero();
-    buffer_start_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
-    buffer_end_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
-  } else {
-    if (imu_end_time_ < scan_end_time_) {
-      imu_time_offset_ = (scan_end_time_ - imu_end_time_).seconds();
-      buffer_end_time_ = scan_end_time_;
-      buffer_start_time_ = imu_end_time_;
-      scan_end_time_ = imu_end_time_;
-    }
-    if (imu_start_time_ > scan_start_time_) scan_start_time_ = imu_start_time_;
-
-    std::fill(scan_bin_sizes_.begin(), scan_bin_sizes_.end(), 0);
-    std::fill(filter_bin_sizes_.begin(), filter_bin_sizes_.end(), 0);
-    total_size = buffer_cloud_->size() + raw_cloud_->size();
-
-    scan_cloud_->resize(total_size);
-    filter_cloud_->resize(total_size);
-
-#pragma omp parallel for
-    for (int i = 0; i < total_size; i++) {
-      const EllipseLioPoint& pt =
-          i < buffer_cloud_->size()
-              ? buffer_cloud_->points[i]
-              : raw_cloud_->points[i - buffer_cloud_->size()];
-      rclcpp::Time pt_time =
-          rclcpp::Time(pt.time_secs, pt.time_nsecs, RCL_ROS_TIME);
-      if (pt_time < scan_start_time_) continue;
-      if (pt_time > scan_end_time_) {
-        filter_bin_sizes_[pt.bin_idx]++;
-        filter_cloud_->points[filter_idx++] = pt;
-      } else {
-        scan_bin_sizes_[pt.bin_idx]++;
-        scan_cloud_->points[scan_idx++] = pt;
-      }
-    }
-
-    scan_cloud_->resize(scan_idx);
-    filter_cloud_->resize(filter_idx);
-    *buffer_cloud_ = *filter_cloud_;
-
-#pragma omp parallel for
-    for (int i = 0; i < scan_bin_sizes_.size(); i++) {
-      scan_cloud_bins_[i] = scan_bin_sizes_[i];
-      buffer_cloud_bins_[i] = filter_bin_sizes_[i];
-    }
-  }
+  scan_start_time_ = raw_start_time_;
+  scan_end_time_ = raw_end_time_;
+  *scan_cloud_ = *raw_cloud_;
+  scan_cloud_bins_ = raw_cloud_bins_;
 
   if (GroupRangeBins(scan_cloud_->points, scan_cloud_bins_, filter_cloud_->points)) {
     RCLCPP_INFO_ONCE(this->get_logger(), "Restored range-bin ordering after scan synchronization");
