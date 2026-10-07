@@ -415,6 +415,11 @@ void MappingNode::MapIncremental() {
     ioctree_.SetBucketSize(lid_process_->bucket_sizes_[fmax(i, start_bin_)]);
     ioctree_.Update(*scan_cloud_, added_idxs, map_idxs, start_idx, end_idx,
                     map_resolution_);
+#ifdef ELLIPSELIO_AREA_EXPORT
+    if (accumulated_with_observations_) {
+      for (int index : added_idxs) map_observation_ids_.push_back(observation_next_id_+index);
+    }
+#endif
     *map_cloud_ += EllipseLioPointCloud(*scan_cloud_, added_idxs);
     new_idxs.insert(new_idxs.end(), map_idxs.begin(), map_idxs.end());
     start_idx = end_idx;
@@ -1508,6 +1513,7 @@ void MappingNode::TimerCallback() {
     scan_times_.push_back(scan_end_time_.nanoseconds());
     if (!area_first_ns_) area_first_ns_=scan_times_.back();
     { std::lock_guard<std::mutex> lock(map_mutex_);
+      if (accumulated_with_observations_) MaybeExportArea();
       if (fresh_observations_) ExportFreshObservations(); else MaybeExportArea(); }
     const double export_time = omp_get_wtime()-t4;
     t4 = omp_get_wtime();

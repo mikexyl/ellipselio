@@ -67,8 +67,9 @@ class MappingNode : public rclcpp::Node {
   friend struct AreaMapTest;
 #ifdef ELLIPSELIO_AREA_EXPORT
   bool area_maps_enabled_ = false, outputs_closed_ = false;
-  bool fresh_observations_ = false;
-  int64_t observation_next_id_ = 0, observation_begin_ns_ = 0;
+  bool fresh_observations_ = false, accumulated_with_observations_ = false;
+  std::vector<int64_t> map_observation_ids_;
+  int64_t observation_next_id_ = 0, observation_begin_ns_ = 0, observation_chunk_id_ = 0;
   std::vector<float> observation_xyz_;
   std::vector<int64_t> observation_ids_, observation_times_;
   std::vector<int32_t> observation_scans_;
@@ -79,7 +80,7 @@ class MappingNode : public rclcpp::Node {
   V3D area_last_center_ = V3D::Zero();
   std::vector<int64_t> scan_times_;
   std::ofstream diagnostics_;
-  std::unique_ptr<SnapshotWriter> area_export_;
+  std::unique_ptr<SnapshotWriter> area_export_, accumulated_export_;
   std::string area_robot_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr mapping_finish_;
   void ConfigureAreaExports();

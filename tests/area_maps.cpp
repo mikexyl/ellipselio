@@ -39,6 +39,19 @@ struct AreaMapTest {
   }
   assert(n->kf_state_.state.pos==before && n->kf_state_.cov==cov);
   assert(n->map_cloud_->size()==geometry.size());
+  n->accumulated_with_observations_=true;
+  n->map_observation_ids_={11,24,30,99};
+  const auto linked=n->AreaSnapshot("test");
+  assert(linked.metadata["observation_id_namespace"]=="fresh_processed_v1");
+  assert(linked.messages.size()==4);
+  for(size_t k=0;k<3;++k)assert(linked.messages[k]==packet.messages[k]);
+  const auto* acquisitions=reinterpret_cast<const int64_t*>(linked.messages[3].data());
+  assert(acquisitions[0]==11 && acquisitions[1]==24 && acquisitions[2]==99);
+  assert(n->kf_state_.state.pos==before && n->kf_state_.cov==cov);
+  n->map_observation_ids_.pop_back();
+  bool missing_link=false;try{n->AreaSnapshot("test");}catch(const std::runtime_error&){missing_link=true;}
+  assert(missing_link);
+  n->accumulated_with_observations_=false;
   const auto immutable=packet.messages;n->map_cloud_->points[0].x+=1000;assert(packet.messages==immutable);
   n->map_cloud_->points[0].x=std::numeric_limits<float>::quiet_NaN();
   bool rejected=false;try{n->SelectAreaPoints(before,V3D::UnitZ());}catch(const std::runtime_error&){rejected=true;}assert(rejected);

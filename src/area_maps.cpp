@@ -26,6 +26,9 @@ SnapshotWriter::Packet MappingNode::AreaSnapshot(const std::string& reason) {
   const V3F t=state.pos.cast<float>();
   std::vector<float> geometry;
   std::vector<int32_t> point_ids,scan_ids;
+  std::vector<int64_t> observation_ids;
+  if (accumulated_with_observations_ && map_observation_ids_.size()!=map_cloud_->size())
+    throw std::runtime_error("Native map/acquisition identity mismatch");
   std::set<int> scans;
   std::vector<std::vector<int>> ranges;
   geometry.reserve(3*ids.size());
@@ -36,6 +39,7 @@ SnapshotWriter::Packet MappingNode::AreaSnapshot(const std::string& reason) {
       throw std::runtime_error("Invalid area-map point provenance");
     geometry.insert(geometry.end(),q.data(),q.data()+3);
     point_ids.push_back(i);scan_ids.push_back(point.scan_idx);scans.insert(point.scan_idx);
+    if (accumulated_with_observations_) observation_ids.push_back(map_observation_ids_[i]);
     if (ranges.empty() || ranges.back()[1]!=i) ranges.push_back({i,i+1});
     else ranges.back()[1]=i+1;
 
@@ -76,6 +80,10 @@ SnapshotWriter::Packet MappingNode::AreaSnapshot(const std::string& reason) {
     if (!values.empty()) std::memcpy(packet.messages.back().data(),values.data(),values.size()*sizeof(T));
   };
   add(geometry);add(point_ids);add(scan_ids);
+  if (accumulated_with_observations_) {
+    packet.metadata["observation_id_namespace"]="fresh_processed_v1";
+    add(observation_ids);
+  }
   return packet;
 }
 
@@ -89,7 +97,7 @@ void MappingNode::MaybeExportArea(bool shutdown) {
   const bool interval=now-(area_last_ns_?area_last_ns_:area_first_ns_)>=area_interval_ns_;
   if (!shutdown && !moved && !interval) return;
   auto packet=AreaSnapshot(shutdown?"shutdown":moved?"displacement":"snapshot_interval");
-  area_export_->enqueue(std::move(packet));
+  (accumulated_export_ ? accumulated_export_ : area_export_)->enqueue(std::move(packet));
   area_last_ns_=now;area_last_center_=kf_state_.state.pos;++area_next_id_;
 }
 } // namespace ellipselio

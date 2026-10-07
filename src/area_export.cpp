@@ -3,6 +3,9 @@
 namespace ellipselio {
 void MappingNode::ConfigureAreaExports() {
   fresh_observations_=declare_parameter<bool>("mapping.area_maps.fresh_observations",false);
+  accumulated_with_observations_=declare_parameter<bool>("mapping.area_maps.accumulated_with_observations",false);
+  if (accumulated_with_observations_ && !fresh_observations_)
+    throw std::invalid_argument("Combined exports require fresh observation tracking");
   area_maps_enabled_=declare_parameter<bool>("mapping.area_maps.enabled",false);
   area_radius_m_=declare_parameter<double>("mapping.area_maps.radius_m",80.);
   area_step_m_=declare_parameter<double>("mapping.area_maps.snapshot_step_m",20.);
@@ -20,14 +23,19 @@ void MappingNode::ConfigureAreaExports() {
     const auto output=declare_parameter<std::string>("mapping.area_maps.output","");
     if (!output.empty()) {
       if (area_robot_.empty()) throw std::invalid_argument("Area-map robot ID required");
-      area_export_=std::make_unique<SnapshotWriter>(declare_parameter<std::string>("mapping.area_maps.python",""),
-          declare_parameter<std::string>("mapping.area_maps.writer",""),output,2);
+      const auto python=declare_parameter<std::string>("mapping.area_maps.python","");
+      const auto writer=declare_parameter<std::string>("mapping.area_maps.writer","");
+      area_export_=std::make_unique<SnapshotWriter>(python,writer,output,2);
+      if (accumulated_with_observations_)
+        accumulated_export_=std::make_unique<SnapshotWriter>(python,writer,output+"_accumulated",2);
     }
   }
 }
 void MappingNode::CloseMappingOutputs() {
   if (outputs_closed_) return;
+  if (accumulated_with_observations_) MaybeExportArea(true);
   if (fresh_observations_) ExportFreshObservations(true); else MaybeExportArea(true);
+  if (accumulated_export_) accumulated_export_->close();
   if (area_export_) area_export_->close();
   if (diagnostics_.is_open()) { diagnostics_.flush(); if (!diagnostics_) throw std::runtime_error("Native log flush failed"); diagnostics_.close(); }
   outputs_closed_=true;
@@ -84,13 +92,14 @@ void MappingNode::ExportFreshObservations(bool shutdown) {
   const V3D gravity=kf_state_.state.grav.get_vect();
   SnapshotWriter::Packet packet;
   packet.metadata={{"schema_version",2},{"strategy","processed_scans"},
-    {"frame","native_odom"},{"robot_id",area_robot_},{"submap_id",area_next_id_++},
+    {"frame","native_odom"},{"robot_id",area_robot_},{"submap_id",observation_chunk_id_++},
     {"complete",true},{"odometry_map_source","persistent_map"},
     {"geometry_count",observation_ids_.size()},
     {"gravity_world_m_s2",{gravity.x(),gravity.y(),gravity.z()}},
     {"available_ns",std::max(scan["stamp_ns"].get<int64_t>(),scan["sensor_stamp_ns"].get<int64_t>())},
     {"watermark_ns",scan["acquisition_floor_ns"]},{"watermark_semantics","imu_history_lower_bound"},
     {"scans",observation_metadata_}};
+  if (accumulated_with_observations_) packet.metadata["accumulated_snapshots"]=area_next_id_;
   auto add=[&packet](const auto& values) {
     using T=typename std::decay_t<decltype(values)>::value_type;
     packet.messages.emplace_back(values.size()*sizeof(T));
