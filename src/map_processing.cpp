@@ -1,4 +1,5 @@
 #include "map_processing.h"
+#include "range_bins.h"
 
 namespace ellipselio {
 
@@ -1381,6 +1382,11 @@ void MappingNode::SyncRawCloudWithImu() {
       buffer_cloud_bins_[i] = filter_bin_sizes_[i];
     }
   }
+
+  if (GroupRangeBins(scan_cloud_->points, scan_cloud_bins_, filter_cloud_->points)) {
+    RCLCPP_INFO_ONCE(this->get_logger(), "Restored range-bin ordering after scan synchronization");
+  }
+  filter_cloud_->clear();
 
   bin_score = start_bin_ / kMaxStartBin;
   if (start_mean_cnt_ < 0) {
