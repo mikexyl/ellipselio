@@ -1451,6 +1451,11 @@ void MappingNode::TimerCallback() {
     odom_mutex_.unlock();
 
     map_counter_++;
+    // Keep live IMU states through deskew, update/repropagation and export.
+    // The completed start also protects the next chronological scan while
+    // its LiDAR callback is still preparing a packet.
+    imu_process_->ReleaseHistoryBefore(
+        lid_process_->OldestPendingStart(scan_start_time_));
   }
 }
 

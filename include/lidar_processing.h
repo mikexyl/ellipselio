@@ -92,6 +92,10 @@ class LidarProcess {
                      rclcpp::Time* end_time, Eigen::ArrayXi* bin_pcs_sizes,
                      int* start_bin, int* mean_bin, double* time_offset);
 
+  /// Conservative retention boundary after mapping a scan: include every
+  /// queued packet and the completed scan's start for the next arrival.
+  rclcpp::Time OldestPendingStart(const rclcpp::Time& completed_start);
+
   /// @brief Number of range bins used for organization
   int num_bins_;
   /// @brief Flag indicating whether LiDAR data has been received
@@ -132,6 +136,7 @@ class LidarProcess {
 
  private:
   friend struct LidarQueueTest;
+  friend struct ImuHistoryRetentionTest;
   struct ProcessedScan {
     EllipseLioPointCloud cloud;
     Eigen::ArrayXi bins;

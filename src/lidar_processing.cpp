@@ -246,6 +246,16 @@ bool LidarProcess::GetPointCloud(EllipseLioPointCloudPtr pc,
   return true;
 }
 
+rclcpp::Time LidarProcess::OldestPendingStart(
+    const rclcpp::Time& completed_start) {
+  std::lock_guard<std::mutex> lock(lidar_mutex_);
+  auto oldest = completed_start;
+  for (const auto& scan : pending_scans_) {
+    if (scan.start < oldest) oldest = scan.start;
+  }
+  return oldest;
+}
+
 void LidarProcess::SetMinMaxTime(int bin_idx) {
   rclcpp::Time pt1_time, pt2_time;
 

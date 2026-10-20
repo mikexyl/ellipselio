@@ -14,7 +14,6 @@
 #include <pcl_conversions/pcl_conversions.h>
 
 #include <Eigen/Eigen>
-#include <boost/circular_buffer.hpp>
 #include <cmath>
 #include <condition_variable>
 #include <csignal>
@@ -131,6 +130,14 @@ class ImuProcess {
   void SyncWithLidar(rclcpp::Time* imu_start_time, rclcpp::Time* imu_end_time);
 
   /**
+   * Release old history only after the current mapping/export cycle finishes.
+   * retain_from is no later than any queued scan's start. Keep its predecessor
+   * and at least the original nominal one-second sample count. New IMU arrivals
+   * never evict states that a queued or in-flight scan may still need.
+   */
+  void ReleaseHistoryBefore(const rclcpp::Time& retain_from);
+
+  /**
    * @brief Set gyroscope measurement covariance.
    * @param gyr_cov Diagonal elements of gyroscope covariance (rad²/s²)
    */
@@ -169,16 +176,17 @@ class ImuProcess {
   Eigen::Matrix<double, 12, 12> q_;
 
  private:
+  friend struct ImuHistoryRetentionTest;
   void SetKfState();
   void Process(const sensor_msgs::msg::Imu::SharedPtr msg);
   void InitImu(const sensor_msgs::msg::Imu::SharedPtr msg);
   void ImuCallback(const sensor_msgs::msg::Imu::UniquePtr msg_in);
   void GetTimeMatch(int* match_idx, const rclcpp::Time& match_time,
-                    const boost::circular_buffer<ImuState>& imu_states);
+                    const std::deque<ImuState>& imu_states);
   void GetMatchingImages(const rclcpp::Time& min_time,
                          const rclcpp::Time& match_time,
                          const CamProcessVec& cams,
-                         const boost::circular_buffer<ImuState>& imu_states);
+                         const std::deque<ImuState>& imu_states);
   void ColorisePoint(EllipseLioPoint* pt, const CamProcessVec& cams,
                      const Eigen::Isometry3d& T_world_pt,
                      const Eigen::Isometry3d& T_imu_lidar);
@@ -194,7 +202,7 @@ class ImuProcess {
   rclcpp::CallbackGroup::SharedPtr imu_callback_group_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
 
-  boost::circular_buffer<ImuState> imu_states_, synced_imu_states_;
+  std::deque<ImuState> imu_states_, synced_imu_states_;
 
   V3D mean_acc_;
   V3D mean_gyr_;

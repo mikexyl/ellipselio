@@ -11,8 +11,7 @@ ImuProcess::ImuProcess(IkfomSPtr kf, ImuParams params,
       imu_counter_(0),
       params_(params),
       kf_(kf),
-      node_(node),
-      imu_states_(params.rate) {
+      node_(node) {
   imu_callback_group_ = node_->create_callback_group(
       rclcpp::CallbackGroupType::MutuallyExclusive);
 
@@ -164,9 +163,21 @@ void ImuProcess::SyncWithLidar(rclcpp::Time* imu_start_time,
   imu_mutex_.unlock();
 }
 
+void ImuProcess::ReleaseHistoryBefore(const rclcpp::Time& retain_from) {
+  std::lock_guard<std::mutex> lock(imu_mutex_);
+  const size_t nominal_samples = static_cast<size_t>(std::max(2, params_.rate));
+  // Strict comparison retains a predecessor even when a sample equals the
+  // boundary. Pruning is mapping-consumer driven, never IMU-arrival driven.
+  while (imu_states_.size() > nominal_samples &&
+         imu_states_[1].state.time < retain_from) {
+    imu_states_.pop_front();
+  }
+  if (!imu_states_.empty()) imu_start_time_ = imu_states_.front().state.time;
+}
+
 void ImuProcess::GetTimeMatch(
     int* match_idx, const rclcpp::Time& match_time,
-    const boost::circular_buffer<ImuState>& imu_states) {
+    const std::deque<ImuState>& imu_states) {
   double time_diff;
   bool match_flag = false;
 
@@ -249,7 +260,7 @@ void ImuProcess::UndistortPointCloud(EllipseLioPointCloudPtr pc,
 void ImuProcess::GetMatchingImages(
     const rclcpp::Time& min_time, const rclcpp::Time& match_time,
     const CamProcessVec& cams,
-    const boost::circular_buffer<ImuState>& imu_states) {
+    const std::deque<ImuState>& imu_states) {
 #pragma omp parallel for
   for (size_t i = 0; i < cams.size(); i++) {
     rclcpp::Time img_time;
