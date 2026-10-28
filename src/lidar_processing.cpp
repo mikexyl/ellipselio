@@ -1,6 +1,14 @@
 #include "lidar_processing.h"
+#include <cstdlib>
+#include <unistd.h>
+#include <type_traits>
 
-LidarProcess::~LidarProcess() {}
+LidarProcess::~LidarProcess() { CloseScanSpool(); }
+
+void LidarProcess::CloseScanSpool() {
+  if (scan_spool_) std::fclose(scan_spool_);
+  scan_spool_ = nullptr;
+}
 
 LidarProcess::LidarProcess(LidarParams params, float map_resolution,
                            rclcpp::Node::SharedPtr node)
@@ -105,9 +113,8 @@ void LidarProcess::LidarCallback(
                              "WARNING: Lidar time offset detected!");
   }
 
-  lidar_mutex_.lock();
+  std::lock_guard<std::mutex> lock(lidar_mutex_);
   Process(msg);
-  lidar_mutex_.unlock();
 }
 
 void LidarProcess::Process(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
@@ -199,11 +206,43 @@ void LidarProcess::Process(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
 
 void LidarProcess::QueueProcessedCloud() {
   if (ellipselio_pc_->empty()) return;
-  // Bounded ingestion: overload is a visible failure, never silent replacement.
-  if (pending_scans_.size() >= 32)
-    throw std::runtime_error("Processed LiDAR scan queue overflow");
-  pending_scans_.push_back({*ellipselio_pc_, bin_pcs_sizes_, lidar_start_time_,
-      lidar_end_time_, start_bin_, mean_bin_, lidar_time_offset_.seconds()});
+  // Preserve complete FIFO scans at the original input rate. Only excess
+  // processed clouds spill; packet identities/times and IMU retention stay live.
+  ProcessedScan packet{*ellipselio_pc_, bin_pcs_sizes_, lidar_start_time_,
+      lidar_end_time_, start_bin_, mean_bin_, lidar_time_offset_.seconds()};
+  if (resident_scans_ >= 32) {
+    static_assert(std::is_trivially_copyable<EllipseLioPoint>::value,
+                  "Process-local spool requires trivially copyable points");
+    if (!scan_spool_) {
+      const char* temporary = std::getenv("TMPDIR");
+      std::string name = std::string(temporary ? temporary : "/tmp") + "/ellipselio-scans-XXXXXX";
+      std::vector<char> path(name.begin(), name.end()); path.push_back(0);
+      const int fd = mkstemp(path.data());
+      if (fd < 0) throw std::runtime_error("Cannot create processed-scan spool");
+      scan_spool_ = fdopen(fd, "w+b");
+      const int removed = unlink(path.data());
+      if (!scan_spool_ || removed != 0) {
+        if (scan_spool_) CloseScanSpool(); else close(fd);
+        throw std::runtime_error("Cannot open anonymous processed-scan spool");
+      }
+      RCLCPP_WARN(node_->get_logger(), "Processed-scan backlog spilling to disk; retaining all scans");
+    }
+    if (fseeko(scan_spool_, 0, SEEK_END) != 0 ||
+        (packet.spool_offset = ftello(scan_spool_)) < 0)
+      throw std::runtime_error("Processed-scan spool seek failed");
+    packet.point_count = packet.cloud.size();
+    if (std::fwrite(packet.cloud.points.data(), sizeof(EllipseLioPoint),
+                    packet.point_count, scan_spool_) != packet.point_count ||
+        std::fflush(scan_spool_) != 0)
+      throw std::runtime_error("Processed-scan spool write failed");
+    packet.cloud.points.clear(); packet.cloud.points.shrink_to_fit();
+    ++spilled_scans_; spilled_bytes_ += packet.point_count * sizeof(EllipseLioPoint);
+  } else {
+    ++resident_scans_;
+  }
+  pending_scans_.push_back(std::move(packet));
+  ++enqueued_scans_;
+  peak_pending_scans_ = std::max(peak_pending_scans_, pending_scans_.size());
   lidar_has_data_ = true;
 }
 
@@ -221,6 +260,8 @@ void LidarProcess::ClearPointCloud() {
   lidar_mutex_.lock();
   ClearBins();
   pending_scans_.clear();
+  resident_scans_ = 0;
+  CloseScanSpool();
   lidar_has_data_ = false;
   lidar_mutex_.unlock();
 }
@@ -234,6 +275,15 @@ bool LidarProcess::GetPointCloud(EllipseLioPointCloudPtr pc,
   if (pending_scans_.empty()) return false;
   if (!pc->empty()) throw std::logic_error("Cannot append to an unconsumed scan");
   auto& packet = pending_scans_.front();
+  if (packet.spool_offset >= 0) {
+    packet.cloud.points.resize(packet.point_count);
+    if (!scan_spool_ || fseeko(scan_spool_, packet.spool_offset, SEEK_SET) != 0 ||
+        std::fread(packet.cloud.points.data(), sizeof(EllipseLioPoint),
+                   packet.point_count, scan_spool_) != packet.point_count)
+      throw std::runtime_error("Processed-scan spool read failed");
+  } else {
+    --resident_scans_;
+  }
   *start_time = packet.start;
   *end_time = packet.end;
   *start_bin = packet.start_bin;
@@ -242,8 +292,15 @@ bool LidarProcess::GetPointCloud(EllipseLioPointCloudPtr pc,
   *bin_pcs_sizes = packet.bins;
   *pc = std::move(packet.cloud);
   pending_scans_.pop_front();
+  if (pending_scans_.empty()) CloseScanSpool();
   lidar_has_data_ = !pending_scans_.empty();
   return true;
+}
+
+LidarProcess::QueueDiagnostics LidarProcess::PendingDiagnostics() {
+  std::lock_guard<std::mutex> lock(lidar_mutex_);
+  return {pending_scans_.size(), resident_scans_, peak_pending_scans_,
+          enqueued_scans_, spilled_scans_, spilled_bytes_};
 }
 
 rclcpp::Time LidarProcess::OldestPendingStart(

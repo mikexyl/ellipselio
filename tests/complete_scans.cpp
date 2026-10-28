@@ -39,10 +39,29 @@ struct LidarQueueTest {
       points->clear();
     }
     assert(!lidar.GetPointCloud(points, &start, &end, &bins, &first, &mean, &offset));
-    for (int id = 1; id <= 32; ++id) enqueue(id);
-    bool rejected = false;
-    try { enqueue(33); } catch (const std::runtime_error&) { rejected = true; }
-    assert(rejected && lidar.pending_scans_.size() == 32);
+    for (int id = 1; id <= 96; ++id) enqueue(id);
+    auto q=lidar.PendingDiagnostics();
+    assert(q.pending == 96 && q.resident == 32 && q.spilled == 64);
+    assert(lidar.OldestPendingStart(rclcpp::Time(200000000000LL,RCL_ROS_TIME)) ==
+           rclcpp::Time(1000000000LL,RCL_ROS_TIME));
+    for (int id = 1; id <= 96; ++id) {
+      assert(lidar.GetPointCloud(points, &start, &end, &bins, &first, &mean, &offset));
+      assert(points->size()==1 && points->front().x==id && bins[7]==1);
+      assert(points->front().time_secs==unsigned(id));
+      assert(start.nanoseconds()==id*1000000000LL && end.nanoseconds()==id*1000000000LL+100000000);
+      assert(first==2 && mean==7 && std::abs(offset-id*1e-9)<1e-12);
+      points->clear();
+      // Interleaving new resident packets behind disk packets must stay FIFO.
+      if (id == 40) for (int k=97;k<=110;++k) enqueue(k);
+    }
+    for (int id=97;id<=110;++id) {
+      assert(lidar.GetPointCloud(points,&start,&end,&bins,&first,&mean,&offset));
+      assert(points->front().x==id); points->clear();
+    }
+    assert(lidar.PendingDiagnostics().pending==0 && !lidar.scan_spool_);
+    for (int id=1;id<=40;++id) enqueue(id);
+    lidar.ClearPointCloud();
+    assert(!lidar.scan_spool_ && lidar.PendingDiagnostics().resident==0);
   }
 };
 int main(int argc, char** argv) {
@@ -54,5 +73,5 @@ int main(int argc, char** argv) {
   assert(CompleteScanReadiness(10, 20, 11, 30, false) == ScanReadiness::BeforeInitialization);
   assert(CompleteScanReadiness(10, 20, 11, 30, true) == ScanReadiness::Expired);
   rclcpp::init(argc, argv); LidarQueueTest::run(); rclcpp::shutdown();
-  std::cout << "FIFO immutable scans, no append, bounded queue, delayed IMU and exact boundaries passed\n";
+  std::cout << "FIFO immutable scans, bounded resident clouds, lossless disk spill/reload, delayed IMU and exact boundaries passed\n";
 }

@@ -11,6 +11,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <deque>
+#include <cstdio>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
 #include "common_lib.h"
@@ -96,6 +97,12 @@ class LidarProcess {
   /// queued packet and the completed scan's start for the next arrival.
   rclcpp::Time OldestPendingStart(const rclcpp::Time& completed_start);
 
+  struct QueueDiagnostics {
+    size_t pending, resident, peak_pending;
+    uint64_t enqueued, spilled, spill_bytes;
+  };
+  QueueDiagnostics PendingDiagnostics();
+
   /// @brief Number of range bins used for organization
   int num_bins_;
   /// @brief Flag indicating whether LiDAR data has been received
@@ -143,8 +150,14 @@ class LidarProcess {
     rclcpp::Time start, end;
     int start_bin, mean_bin;
     double time_offset;
+    off_t spool_offset = -1;
+    size_t point_count = 0;
   };
   std::deque<ProcessedScan> pending_scans_;
+  FILE* scan_spool_ = nullptr;
+  size_t resident_scans_ = 0, peak_pending_scans_ = 0;
+  uint64_t enqueued_scans_ = 0, spilled_scans_ = 0, spilled_bytes_ = 0;
+  void CloseScanSpool();
   void QueueProcessedCloud();
   /**
    * @brief ROS 2 callback for point cloud reception.

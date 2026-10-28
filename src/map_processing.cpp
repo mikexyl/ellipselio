@@ -1147,7 +1147,28 @@ MappingNode::MappingNode(
       [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
              std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
         loop_timer_->cancel();
-        try { std::lock_guard<std::mutex> lock(map_mutex_); CloseMappingOutputs(); response->success=true; }
+        try {
+          const auto queued = lid_process_->PendingDiagnostics().pending;
+          const auto before = map_counter_;
+          const double drain_start = omp_get_wtime();
+          while (!raw_cloud_->empty() || lid_process_->PendingDiagnostics().pending) {
+            const auto pending = lid_process_->PendingDiagnostics().pending;
+            const auto mapped = map_counter_;
+            TimerCallback();
+            if (map_counter_ == mapped && !raw_cloud_->empty() &&
+                lid_process_->PendingDiagnostics().pending >= pending)
+              throw std::runtime_error("Final LiDAR scan lacks complete IMU coverage");
+          }
+          const double drain_s = omp_get_wtime() - drain_start;
+          { std::lock_guard<std::mutex> lock(map_mutex_); CloseMappingOutputs(); }
+          const auto q = lid_process_->PendingDiagnostics();
+          response->message=nlohmann::json({{"pending_at_finish",queued},
+            {"drained_scans",map_counter_-before},{"drain_wall_s",drain_s},
+            {"mapped_scans",map_counter_},{"pending_scans",q.pending},
+            {"peak_pending_scans",q.peak_pending},{"enqueued_scans",q.enqueued},
+            {"spilled_scans",q.spilled},{"spilled_bytes",q.spill_bytes}}).dump();
+          response->success=true;
+        }
         catch (const std::exception& e) { response->message=e.what(); }
       }, rmw_qos_profile_services_default, loop_callback_group_);
 #endif

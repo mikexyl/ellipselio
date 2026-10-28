@@ -55,6 +55,10 @@ void MappingNode::RecordNativeUpdate(double core_time,double export_time) {
     {"features",analytics_msg_.num_feats},{"num_feats",analytics_msg_.num_feats},{"residual",analytics_msg_.res_mean},
     {"processing_s",core_time+export_time},{"core_processing_s",core_time},{"snapshot_s",export_time},
     {"pose",{s.pos.x(),s.pos.y(),s.pos.z(),s.rot.coeffs()[0],s.rot.coeffs()[1],s.rot.coeffs()[2],s.rot.coeffs()[3]}}};
+  const auto queue=lid_process_->PendingDiagnostics();
+  row["pending_scans"]=queue.pending; row["resident_pending_scans"]=queue.resident;
+  row["peak_pending_scans"]=queue.peak_pending; row["spilled_scans"]=queue.spilled;
+  row["spilled_bytes"]=queue.spill_bytes;
   diagnostics_<<row.dump()<<'\n'; diagnostics_.flush();
   if (!diagnostics_) throw std::runtime_error("Native update log write failed");
 }
