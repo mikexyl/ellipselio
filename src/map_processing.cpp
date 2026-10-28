@@ -15,7 +15,7 @@ bool MappingNode::SyncPackages() {
   }
   imu_process_->lidar_ready_ = true;
   // The copied IMU interval is also the exact interval used by deskew.
-  imu_process_->SyncWithLidar(&imu_start_time_, &imu_end_time_);
+  imu_process_->SyncWithLidar(&imu_start_time_, &imu_end_time_, raw_end_time_);
   const auto readiness = CompleteScanReadiness(raw_start_time_.nanoseconds(),
       raw_end_time_.nanoseconds(), imu_start_time_.nanoseconds(),
       imu_end_time_.nanoseconds(), map_counter_ > 0);
@@ -1159,14 +1159,19 @@ MappingNode::MappingNode(
                 lid_process_->PendingDiagnostics().pending >= pending)
               throw std::runtime_error("Final LiDAR scan lacks complete IMU coverage");
           }
+          imu_process_->FinishInput();
           const double drain_s = omp_get_wtime() - drain_start;
           { std::lock_guard<std::mutex> lock(map_mutex_); CloseMappingOutputs(); }
           const auto q = lid_process_->PendingDiagnostics();
+          const auto imu = imu_process_->Diagnostics();
           response->message=nlohmann::json({{"pending_at_finish",queued},
             {"drained_scans",map_counter_-before},{"drain_wall_s",drain_s},
             {"mapped_scans",map_counter_},{"pending_scans",q.pending},
             {"peak_pending_scans",q.peak_pending},{"enqueued_scans",q.enqueued},
-            {"spilled_scans",q.spilled},{"spilled_bytes",q.spill_bytes}}).dump();
+            {"spilled_scans",q.spilled},{"spilled_bytes",q.spill_bytes},
+            {"pending_imu_samples",imu.pending_samples},{"received_imu_samples",imu.received_samples},
+            {"imu_prediction_steps",imu.prediction_steps},{"imu_repropagation_steps",imu.repropagation_steps},
+            {"peak_materialized_imu_states",imu.peak_materialized_states}}).dump();
           response->success=true;
         }
         catch (const std::exception& e) { response->message=e.what(); }

@@ -127,7 +127,16 @@ class ImuProcess {
    * @details Extracts IMU measurements that span the current LiDAR scan
    * interval and integrates them for state propagation.
    */
-  void SyncWithLidar(rclcpp::Time* imu_start_time, rclcpp::Time* imu_end_time);
+  void SyncWithLidar(rclcpp::Time* imu_start_time, rclcpp::Time* imu_end_time,
+                     const rclcpp::Time& scan_end);
+
+  // Finish remaining received IMU samples once after all LiDAR work is drained.
+  void FinishInput();
+  struct WorkDiagnostics {
+    size_t pending_samples, materialized_states, copied_states, peak_materialized_states;
+    uint64_t received_samples, prediction_steps, repropagation_steps;
+  };
+  WorkDiagnostics Diagnostics();
 
   /**
    * Release old history only after the current mapping/export cycle finishes.
@@ -203,6 +212,12 @@ class ImuProcess {
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
 
   std::deque<ImuState> imu_states_, synced_imu_states_;
+  // Arrival retains complete original messages, without speculatively predicting
+  // an arbitrarily long future beyond the next chronological LiDAR update.
+  std::deque<sensor_msgs::msg::Imu::SharedPtr> pending_imu_;
+  rclcpp::Time last_received_time_{0, 0, RCL_ROS_TIME};
+  size_t copied_states_ = 0, peak_materialized_states_ = 0;
+  uint64_t received_samples_ = 0, prediction_steps_ = 0, repropagation_steps_ = 0;
 
   V3D mean_acc_;
   V3D mean_gyr_;

@@ -1,5 +1,4 @@
 #include "imu_processing.h"
-#include "lidar_processing.h"
 #include "scan_readiness.h"
 #include <atomic>
 #include <cassert>
@@ -8,148 +7,133 @@
 
 struct ImuHistoryRetentionTest {
   static constexpr int64_t epoch = 100000000000LL;
-  static constexpr int64_t step = 2000000LL;  // 500 Hz.
-  static rclcpp::Time at(int64_t offset) {
-    return rclcpp::Time(epoch + offset, RCL_ROS_TIME);
+  static constexpr int64_t step = 2000000LL;  // Original 500 Hz samples.
+  static rclcpp::Time at(int64_t offset) { return rclcpp::Time(epoch+offset,RCL_ROS_TIME); }
+  static ImuParams params() {
+    ImuParams p{}; p.rate=500; p.gyr_noise=.01; p.acc_noise=.1;
+    p.gyr_bias=p.acc_bias=.0001; p.topic="/test/imu";
+    p.t_imu_lidar=V3D::Zero(); p.r_imu_lidar=M3D::Identity(); return p;
   }
-  static void feed(ImuProcess& imu, int first, int last) {
-    for (int i = first; i <= last; ++i) {
-      auto msg = std::make_unique<sensor_msgs::msg::Imu>();
-      msg->header.stamp = at(i * step);
-      msg->linear_acceleration.z = kGravityMetersPerSecondSquared;
+  static IkfomSPtr filter() {
+    IkfomSPtr kf(new Ikfom());
+    kf->init_dyn_share(GetF,DfDx,DfDw,
+      [](state_ikfom&,esekfom::dyn_share_datastruct<double>& d) {
+        // Same deterministic observation in the old eager and new lazy paths.
+        // Covariance still updates, so future covariance repropagation matters.
+        d.valid=true; d.h=Eigen::VectorXd::Zero(6);
+        d.h_x=Eigen::MatrixXd::Identity(6,6); d.h_x_R=Eigen::MatrixXd::Identity(6,6);
+      },10,1e-3);
+    return kf;
+  }
+  static void feed(ImuProcess& imu,int first,int last,bool eager=false) {
+    for(int i=first;i<=last;++i) {
+      auto msg=std::make_unique<sensor_msgs::msg::Imu>(); msg->header.stamp=at(i*step);
+      msg->linear_acceleration.z=kGravityMetersPerSecondSquared;
+      msg->linear_acceleration.x=.1*std::sin(i*.01);
+      msg->angular_velocity.z=.02*std::sin(i*.003);
       imu.ImuCallback(std::move(msg));
+      // This recreates the original callback's immediate prediction of every
+      // sample, without maintaining a second estimator implementation.
+      if(eager) imu.FinishInput();
     }
   }
-  static void queue(LidarProcess& lidar, int64_t start, int64_t end) {
-    lidar.ellipselio_pc_->clear();
-    EllipseLioPoint point{};
-    point.x = 1.f;
-    point.bin_idx = 1;
-    point.time_secs = (epoch + end) / 1000000000LL;
-    point.time_nsecs = (epoch + end) % 1000000000LL;
-    lidar.ellipselio_pc_->push_back(point);
-    lidar.bin_pcs_sizes_.setZero();
-    lidar.bin_pcs_sizes_[1] = 1;
-    lidar.lidar_start_time_ = at(start);
-    lidar.lidar_end_time_ = at(end);
-    lidar.start_bin_ = lidar.mean_bin_ = 1;
-    lidar.QueueProcessedCloud();
+  static EllipseLioPointCloudPtr cloud(int64_t end) {
+    EllipseLioPointCloudPtr p(new EllipseLioPointCloud);
+    for(int k=0;k<10;++k) {
+      EllipseLioPoint q{};q.x=1.f+k*.1f;q.y=.2f;q.bin_idx=1;
+      const auto t=epoch+end-49000000LL+k*5000000LL;
+      q.time_secs=t/1000000000LL;q.time_nsecs=t%1000000000LL;p->push_back(q);
+    }
+    return p;
+  }
+  static void same(const KfState& a,const KfState& b) {
+    assert(a.time==b.time);
+    assert((a.state.pos-b.state.pos).norm()<1e-9);
+    assert((a.state.vel-b.state.vel).norm()<1e-9);
+    assert((a.state.rot.toRotationMatrix()-b.state.rot.toRotationMatrix()).norm()<1e-9);
+    assert((a.state.bg-b.state.bg).norm()<1e-9 && (a.state.ba-b.state.ba).norm()<1e-9);
+    assert((a.state.grav.get_vect()-b.state.grav.get_vect()).norm()<1e-9);
+    assert((a.cov-b.cov).cwiseAbs().maxCoeff()<1e-9);
   }
   static void run() {
-    auto node = std::make_shared<rclcpp::Node>("imu_retention_test");
-    IkfomSPtr kf(new Ikfom());
-    kf->init_dyn_share(GetF, DfDx, DfDw,
-        [](state_ikfom&, esekfom::dyn_share_datastruct<double>& data) {
-          // Deterministic zero-residual pose observation, only for exercising
-          // the real update/repropagation path after a delayed scan.
-          data.valid = true;
-          data.h = Eigen::VectorXd::Zero(6);
-          data.h_x = Eigen::MatrixXd::Identity(6, 6);
-          data.h_x_R = Eigen::MatrixXd::Identity(6, 6);
-        }, 10, 1e-3);
-    ImuParams params{};
-    params.rate = 500;
-    params.gyr_noise = .01;
-    params.acc_noise = .1;
-    params.gyr_bias = params.acc_bias = .0001;
-    params.topic = "/test/imu";
-    params.t_imu_lidar = V3D::Zero();
-    params.r_imu_lidar = M3D::Identity();
-    ImuProcess imu(kf, params, node);
-    imu.ReleaseHistoryBefore(at(0));  // Empty startup is harmless.
-    imu.lidar_ready_ = true;
-    feed(imu, 0, 1500);  // Initialize, then accumulate two seconds of states.
-    assert(!imu.imu_need_init_ && imu.imu_states_.size() > 500);
-
-    LidarParams lidar_params{3, 20, 64, 0., 100., 45., "/test/lidar"};
-    LidarProcess lidar(lidar_params, .1f, node);
-    queue(lidar, 1200000000LL, 1250000000LL);
-    queue(lidar, 1250000000LL, 1300000000LL);
-    queue(lidar, 1300000000LL, 1350000000LL);
-    assert(lidar.OldestPendingStart(at(2900000000LL)) == at(1200000000LL));
-
-    EllipseLioPointCloudPtr cloud(new EllipseLioPointCloud);
-    rclcpp::Time start, end, oldest, newest;
-    Eigen::ArrayXi bins;
-    int first, mean;
-    double offset;
-    assert(lidar.GetPointCloud(cloud, &start, &end, &bins, &first, &mean, &offset));
-    imu.SyncWithLidar(&oldest, &newest);
-    const auto protected_oldest = oldest;
-    assert(ellipselio::CompleteScanReadiness(start.nanoseconds(), end.nanoseconds(),
-        oldest.nanoseconds(), newest.nanoseconds(), true) ==
-        ellipselio::ScanReadiness::Ready);
-    KfState scan_state;
-    imu.UndistortPointCloud(cloud, &scan_state, start, end, {});
-    assert(scan_state.time >= end && (scan_state.time - end).nanoseconds() <= step);
-    assert(std::abs(cloud->front().x - 1.f) < 1e-5);
-
-    // Mapping has dequeued a scan but has not finished its update. Continued
-    // IMU callbacks must preserve both its live states and the queued scans.
-    std::atomic<bool> done{false};
-    std::thread producer([&] { feed(imu, 1501, 2500); done = true; });
-    for (int i = 0; i < 20 && !done; ++i) {
-      imu.SyncWithLidar(&oldest, &newest);
-      assert(oldest == protected_oldest && newest >= at(3000000000LL));
-      std::this_thread::yield();
+    auto node=std::make_shared<rclcpp::Node>("imu_retention_test");
+    ImuProcess lazy(filter(),params(),node),eager(filter(),params(),node);
+    lazy.lidar_ready_=eager.lidar_ready_=true;
+    lazy.ReleaseHistoryBefore(at(0));
+    feed(lazy,0,6000);feed(eager,0,6000,true);  // 12 s delivered before mapping.
+    assert(!lazy.imu_need_init_ && lazy.imu_states_.empty());
+    assert(lazy.Diagnostics().pending_samples>5000 && lazy.Diagnostics().prediction_steps==0);
+    rclcpp::Time oldest,newest;
+    uint64_t previous_predictions=0;
+    int64_t last_end=0;
+    for(int scan=0;scan<25;++scan) {
+      const int64_t end=1251000000LL+scan*50000000LL,start=end-50000000LL;
+      last_end=end;
+      lazy.SyncWithLidar(&oldest,&newest,at(end));
+      assert(ellipselio::CompleteScanReadiness(epoch+start,epoch+end,
+        oldest.nanoseconds(),newest.nanoseconds(),true)==ellipselio::ScanReadiness::Ready);
+      assert(newest>at(end) && (newest-at(end)).nanoseconds()<=step);
+      eager.SyncWithLidar(&oldest,&newest,at(end));
+      auto a=cloud(end),b=cloud(end);KfState ka,kb;
+      lazy.UndistortPointCloud(a,&ka,at(start),at(end),{});
+      eager.UndistortPointCloud(b,&kb,at(start),at(end),{});
+      same(ka,kb);
+      for(size_t k=0;k<a->size();++k)
+        assert((a->points[k].getVector3fMap()-b->points[k].getVector3fMap()).norm()<1e-6f);
+      lazy.UpdateStatesWithLidar(&ka,at(end),1.);
+      eager.UpdateStatesWithLidar(&kb,at(end),1.);
+      assert(lazy.trial_lidar_updated && eager.trial_lidar_updated);same(ka,kb);
+      auto work=lazy.Diagnostics();
+      assert(work.repropagation_steps==0 && work.copied_states<=526);
+      if(scan) assert(work.prediction_steps-previous_predictions<=26);
+      previous_predictions=work.prediction_steps;
+      lazy.ReleaseHistoryBefore(at(start));eager.ReleaseHistoryBefore(at(start));
     }
+    assert(eager.Diagnostics().repropagation_steps>100000);
+    assert(lazy.Diagnostics().peak_materialized_states<=526);
+
+    // Future arrivals remain raw samples: a much larger backlog must not
+    // increase scan-local prediction/repropagation or materialized-state size.
+    const auto before=lazy.Diagnostics();
+    std::thread producer([&]{feed(lazy,6001,50000);});
+    for(int i=0;i<10;++i) lazy.SyncWithLidar(&oldest,&newest,at(last_end));
     producer.join();
-    assert(imu.imu_states_.front().state.time == protected_oldest);
-    imu.UpdateStatesWithLidar(&scan_state, end, 1.);
-    assert(imu.trial_lidar_updated);
-    assert(scan_state.time >= end && (scan_state.time - end).nanoseconds() <= step);
-    assert(imu.imu_states_.back().state.time == at(5000000000LL));
-    assert(imu.imu_states_.back().state.cov.allFinite());
+    lazy.SyncWithLidar(&oldest,&newest,at(last_end));
+    auto after=lazy.Diagnostics();
+    assert(after.received_samples==50001 && after.pending_samples>48000);
+    assert(after.prediction_steps==before.prediction_steps && after.repropagation_steps==0);
+    assert(after.materialized_states<=526 && after.copied_states<=526);
+    lazy.FinishInput();
+    auto finished=lazy.Diagnostics();
+    assert(finished.pending_samples==0);
+    assert(finished.prediction_steps+lazy.init_iter_num_==finished.received_samples);
+    assert(lazy.imu_states_.back().state.time==at(50000*step));
+    lazy.ReleaseHistoryBefore(at(50000*step));assert(lazy.imu_states_.size()==500);
 
-    // Release happens after the whole scan cycle, and preserves interpolation
-    // history for remaining packets even if the caller supplies a later bound.
-    assert(lidar.OldestPendingStart(at(4900000000LL)) == at(1250000000LL));
-    imu.ReleaseHistoryBefore(lidar.OldestPendingStart(start));
-    assert(imu.imu_states_.front().state.time < start);
-    assert(imu.imu_states_[1].state.time >= start);
-    assert(imu.imu_states_.size() > 500);
-    cloud->clear();
-    for (int i = 0; i < 2; ++i) {
-      assert(lidar.GetPointCloud(cloud, &start, &end, &bins, &first, &mean, &offset));
-      imu.SyncWithLidar(&oldest, &newest);
-      assert(oldest < start && newest >= end);
-      imu.ReleaseHistoryBefore(lidar.OldestPendingStart(start));
-      cloud->clear();
-    }
-    // Once mapping catches up, excess history is reclaimed. Normal retention
-    // is never shorter than the previous nominal sample-count buffer.
-    assert(lidar.OldestPendingStart(at(4900000000LL)) == at(4900000000LL));
-    imu.ReleaseHistoryBefore(at(4900000000LL));
-    assert(imu.imu_states_.size() == 500);
-
-    // A scan waiting for future IMU data remains usable even if delivery later
-    // advances several seconds before mapping resumes.
-    queue(lidar, 4990000000LL, 5040000000LL);
-    assert(lidar.GetPointCloud(cloud, &start, &end, &bins, &first, &mean, &offset));
-    imu.SyncWithLidar(&oldest, &newest);
-    assert(ellipselio::CompleteScanReadiness(start.nanoseconds(), end.nanoseconds(),
-        oldest.nanoseconds(), newest.nanoseconds(), true) ==
-        ellipselio::ScanReadiness::Wait);
-    feed(imu, 2501, 4000);
-    imu.SyncWithLidar(&oldest, &newest);
-    assert(oldest < start && newest >= end && imu.imu_states_.size() == 2000);
-    imu.UndistortPointCloud(cloud, &scan_state, start, end, {});
-    imu.UpdateStatesWithLidar(&scan_state, end, 1.);
-    assert(imu.trial_lidar_updated);
-    assert(scan_state.time >= end && (scan_state.time - end).nanoseconds() <= step);
-    imu.ReleaseHistoryBefore(lidar.OldestPendingStart(start));
-    assert(imu.imu_states_.front().state.time < start);
-    assert(imu.imu_states_[1].state.time >= start);
-    imu.ReleaseHistoryBefore(at(7900000000LL));
-    assert(imu.imu_states_.size() == 500);
-    std::cout << "500 Hz IMU / 20 Hz LiDAR: queued and in-flight retention, "
-                 "concurrent arrivals, delayed deskew/update/repropagation, "
-                 "predecessor preservation and catch-up reclamation passed\n";
+    // A scan waiting for future coverage survives late IMU delivery, and
+    // materialization stops at its exact original bracket once data arrives.
+    ImuProcess delayed(filter(),params(),node);delayed.lidar_ready_=true;
+    feed(delayed,0,1500);
+    const auto start=at(3990000000LL),end=at(4041000000LL);
+    delayed.SyncWithLidar(&oldest,&newest,end);
+    const auto protected_oldest=oldest;
+    assert(ellipselio::CompleteScanReadiness(start.nanoseconds(),end.nanoseconds(),
+      oldest.nanoseconds(),newest.nanoseconds(),true)==ellipselio::ScanReadiness::Wait);
+    feed(delayed,1501,4000);
+    delayed.SyncWithLidar(&oldest,&newest,end);
+    assert(oldest==protected_oldest && newest>end && (newest-end).nanoseconds()<=step);
+    assert(delayed.Diagnostics().pending_samples>1900);
+    auto p=cloud(4041000000LL);KfState state;
+    delayed.UndistortPointCloud(p,&state,start,end,{});
+    delayed.UpdateStatesWithLidar(&state,end,1.);assert(delayed.trial_lidar_updated);
+    delayed.ReleaseHistoryBefore(start);
+    assert(delayed.imu_states_.front().state.time<start);
+    assert(delayed.Diagnostics().repropagation_steps==0);
+    std::cout<<"Original 500 Hz IMU / 20 Hz LiDAR: eager-versus-lazy pose, covariance and deskew equivalence; "
+                "bounded state work under a 100-second arrival backlog; complete samples; concurrent arrivals; "
+                "delayed coverage and predecessor retention passed\n";
   }
 };
-
-int main(int argc, char** argv) {
-  rclcpp::init(argc, argv);
-  ImuHistoryRetentionTest::run();
-  rclcpp::shutdown();
+int main(int argc,char** argv) {
+  rclcpp::init(argc,argv);ImuHistoryRetentionTest::run();rclcpp::shutdown();
 }

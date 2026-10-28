@@ -46,14 +46,16 @@ void ImuProcess::ImuCallback(const sensor_msgs::msg::Imu::UniquePtr msg_in) {
   sensor_msgs::msg::Imu::SharedPtr msg(new sensor_msgs::msg::Imu(*msg_in));
   imu_counter_++;
 
-  if (rclcpp::Time(msg->header.stamp) < imu_end_time_) {
+  std::lock_guard<std::mutex> lock(imu_mutex_);
+  if (rclcpp::Time(msg->header.stamp) < last_received_time_) {
     RCLCPP_INFO_STREAM(node_->get_logger(), "Imu time out of order");
     return;
   }
-
-  imu_mutex_.lock();
-  Process(msg);
-  imu_mutex_.unlock();
+  last_received_time_ = msg->header.stamp;
+  ++received_samples_;
+  // Initialization keeps its original arrival-time/lidar-ready contract.
+  if (imu_need_init_) Process(msg);
+  else pending_imu_.push_back(std::move(msg));
 }
 
 void ImuProcess::Process(const sensor_msgs::msg::Imu::SharedPtr msg) {
@@ -88,6 +90,7 @@ void ImuProcess::Process(const sensor_msgs::msg::Imu::SharedPtr msg) {
   in.acc = acc_avr;
   in.gyro = gyr_avr;
   kf_->predict(dt, q_, in);
+  ++prediction_steps_;
 
   kf_state_.state = kf_->get_x();
   kf_state_.cov = kf_->get_P();
@@ -107,6 +110,7 @@ void ImuProcess::Process(const sensor_msgs::msg::Imu::SharedPtr msg) {
   imu_state.gyr_avr = gyr_avr - kf_state_.state.bg;
 
   imu_states_.push_back(imu_state);
+  peak_materialized_states_ = std::max(peak_materialized_states_, imu_states_.size());
   imu_start_time_ = imu_states_.front().state.time;
   imu_end_time_ = imu_states_.back().state.time;
   imu_has_data_ = true;
@@ -155,12 +159,37 @@ void ImuProcess::InitImu(const sensor_msgs::msg::Imu::SharedPtr msg) {
 }
 
 void ImuProcess::SyncWithLidar(rclcpp::Time* imu_start_time,
-                               rclcpp::Time* imu_end_time) {
-  imu_mutex_.lock();
+                               rclcpp::Time* imu_end_time,
+                               const rclcpp::Time& scan_end) {
+  std::lock_guard<std::mutex> lock(imu_mutex_);
+  // GetTimeMatch selects the first state strictly after a scan end (or the
+  // latest received state at an input boundary). Keep that identical bracket.
+  // Predict later samples only when the next scan needs them. Otherwise a
+  // delayed scan would repeatedly repropagate the entire growing future.
+  while (!pending_imu_.empty() &&
+         (imu_states_.size() < 2 || imu_states_.back().state.time <= scan_end)) {
+    Process(pending_imu_.front());
+    pending_imu_.pop_front();
+  }
   synced_imu_states_ = imu_states_;
+  copied_states_ = synced_imu_states_.size();
   *imu_start_time = imu_start_time_;
   *imu_end_time = imu_end_time_;
-  imu_mutex_.unlock();
+}
+
+void ImuProcess::FinishInput() {
+  std::lock_guard<std::mutex> lock(imu_mutex_);
+  while (!pending_imu_.empty()) {
+    Process(pending_imu_.front());
+    pending_imu_.pop_front();
+  }
+}
+
+ImuProcess::WorkDiagnostics ImuProcess::Diagnostics() {
+  std::lock_guard<std::mutex> lock(imu_mutex_);
+  return {pending_imu_.size(), imu_states_.size(), copied_states_,
+          peak_materialized_states_, received_samples_, prediction_steps_,
+          repropagation_steps_};
 }
 
 void ImuProcess::ReleaseHistoryBefore(const rclcpp::Time& retain_from) {
@@ -391,6 +420,7 @@ void ImuProcess::UpdateStatesWithLidar(KfState* kf_state,
     in.acc = acc_avr;
     in.gyro = gyr_avr;
     kf_->predict(dt, q_, in);
+    ++repropagation_steps_;
 
     imu_states_[tail_idx].state.state = kf_->get_x();
     imu_states_[tail_idx].state.cov = kf_->get_P();

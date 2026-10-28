@@ -59,6 +59,12 @@ void MappingNode::RecordNativeUpdate(double core_time,double export_time) {
   row["pending_scans"]=queue.pending; row["resident_pending_scans"]=queue.resident;
   row["peak_pending_scans"]=queue.peak_pending; row["spilled_scans"]=queue.spilled;
   row["spilled_bytes"]=queue.spill_bytes;
+  const auto imu=imu_process_->Diagnostics();
+  row["pending_imu_samples"]=imu.pending_samples;
+  row["materialized_imu_states"]=imu.materialized_states;
+  row["copied_imu_states"]=imu.copied_states;
+  row["imu_prediction_steps"]=imu.prediction_steps;
+  row["imu_repropagation_steps"]=imu.repropagation_steps;
   diagnostics_<<row.dump()<<'\n'; diagnostics_.flush();
   if (!diagnostics_) throw std::runtime_error("Native update log write failed");
 }
