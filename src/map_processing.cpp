@@ -1155,9 +1155,10 @@ MappingNode::MappingNode(
             const auto pending = lid_process_->PendingDiagnostics().pending;
             const auto mapped = map_counter_;
             TimerCallback();
+            // A recording can end on a scan the IMU does not cover; leave it pending.
             if (map_counter_ == mapped && !raw_cloud_->empty() &&
                 lid_process_->PendingDiagnostics().pending >= pending)
-              throw std::runtime_error("Final LiDAR scan lacks complete IMU coverage");
+              break;
           }
           imu_process_->FinishInput();
           const double drain_s = omp_get_wtime() - drain_start;
