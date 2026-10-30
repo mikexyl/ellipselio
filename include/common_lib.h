@@ -40,8 +40,10 @@ inline constexpr int kMinProcPoints = 1000;
 inline constexpr int kMaxProcPoints = 30000;
 /// @brief Maximum number of points in a single scan
 inline constexpr int kMaxScanPoints = 200000;
-/// @brief Maximum number of points in map
-inline constexpr int kMaxMapPoints = 10000000;
+/// @brief Maximum number of points in map. The persistent map never discards
+/// history, and multi-kilometre CU-Multi robots exceed 10M points; storage is
+/// reserved or block-allocated, so memory follows the points actually stored.
+inline constexpr int kMaxMapPoints = 32000000;
 /// @}
 
 /// @name Type Aliases
