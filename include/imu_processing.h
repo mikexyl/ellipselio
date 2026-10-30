@@ -27,6 +27,7 @@
 #include <thread>
 
 #include "cam_processing.h"
+#include "imu_initialization.h"
 #include "common_lib.h"
 
 /// @brief Standard gravity acceleration (m/s²)
@@ -130,6 +131,11 @@ class ImuProcess {
   void SyncWithLidar(rclcpp::Time* imu_start_time, rclcpp::Time* imu_end_time,
                      const rclcpp::Time& scan_end);
 
+  // Initialize from the IMU samples stamped before a scan starting at
+  // `scan_start` (see DecideInitialization). Idempotent once initialized.
+  ellipselio::InitializationDecision::Kind InitializeBefore(const rclcpp::Time& scan_start);
+  bool Initialized();
+
   // Finish remaining received IMU samples once after all LiDAR work is drained.
   void FinishInput();
   struct WorkDiagnostics {
@@ -180,7 +186,6 @@ class ImuProcess {
   /// @brief Counter of received IMU measurements
   std::atomic<int> imu_counter_;
   bool imu_has_data_;
-  std::atomic<bool> lidar_ready_;
   rclcpp::Time imu_start_time_, imu_end_time_;
   Eigen::Matrix<double, 12, 12> q_;
 
@@ -188,7 +193,6 @@ class ImuProcess {
   friend struct ImuHistoryRetentionTest;
   void SetKfState();
   void Process(const sensor_msgs::msg::Imu::SharedPtr msg);
-  void InitImu(const sensor_msgs::msg::Imu::SharedPtr msg);
   void ImuCallback(const sensor_msgs::msg::Imu::UniquePtr msg_in);
   void GetTimeMatch(int* match_idx, const rclcpp::Time& match_time,
                     const std::deque<ImuState>& imu_states);
@@ -215,6 +219,8 @@ class ImuProcess {
   // Arrival retains complete original messages, without speculatively predicting
   // an arbitrarily long future beyond the next chronological LiDAR update.
   std::deque<sensor_msgs::msg::Imu::SharedPtr> pending_imu_;
+  // Samples received before initialization, until a scan decides the split.
+  std::vector<sensor_msgs::msg::Imu::SharedPtr> init_imu_;
   rclcpp::Time last_received_time_{0, 0, RCL_ROS_TIME};
   size_t copied_states_ = 0, peak_materialized_states_ = 0;
   uint64_t received_samples_ = 0, prediction_steps_ = 0, repropagation_steps_ = 0;
@@ -226,9 +232,8 @@ class ImuProcess {
   V3D acc_bias_;
   V3D gyr_bias_;
 
-  int init_iter_num_;
   double last_imu_time_;
-  bool b_first_frame_, imu_need_init_;
+  bool imu_need_init_;
 };
 
 #endif  // IMU_PROCESSING_H_

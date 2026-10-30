@@ -13,7 +13,17 @@ bool MappingNode::SyncPackages() {
           &raw_cloud_bins_, &start_bin_, &mean_bin_, &lid_time_offset_)) {
     return false;
   }
-  imu_process_->lidar_ready_ = true;
+  // Initialization depends only on stamps: the same input always starts at the same scan.
+  switch (imu_process_->InitializeBefore(raw_start_time_)) {
+    case ellipselio::InitializationDecision::Wait:
+      return false;
+    case ellipselio::InitializationDecision::ScanBeforeInitialization:
+      raw_cloud_->clear();
+      raw_cloud_bins_.setZero();
+      return false;
+    case ellipselio::InitializationDecision::Initialize:
+      break;
+  }
   // The copied IMU interval is also the exact interval used by deskew.
   imu_process_->SyncWithLidar(&imu_start_time_, &imu_end_time_, raw_end_time_);
   const auto readiness = CompleteScanReadiness(raw_start_time_.nanoseconds(),

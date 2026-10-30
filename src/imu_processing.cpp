@@ -4,10 +4,8 @@ ImuProcess::~ImuProcess() {}
 
 ImuProcess::ImuProcess(IkfomSPtr kf, ImuParams params,
                        rclcpp::Node::SharedPtr node)
-    : b_first_frame_(true),
-      imu_need_init_(true),
+    : imu_need_init_(true),
       imu_has_data_(false),
-      lidar_ready_(false),
       imu_counter_(0),
       params_(params),
       kf_(kf),
@@ -53,8 +51,8 @@ void ImuProcess::ImuCallback(const sensor_msgs::msg::Imu::UniquePtr msg_in) {
   }
   last_received_time_ = msg->header.stamp;
   ++received_samples_;
-  // Initialization keeps its original arrival-time/lidar-ready contract.
-  if (imu_need_init_) Process(msg);
+  // Initialization is decided from stamps by the first usable scan.
+  if (imu_need_init_) init_imu_.push_back(std::move(msg));
   else pending_imu_.push_back(std::move(msg));
 }
 
@@ -65,10 +63,7 @@ void ImuProcess::Process(const sensor_msgs::msg::Imu::SharedPtr msg) {
   V3D gyr_avr, acc_avr;
   rclcpp::Time msg_time;
 
-  if (imu_need_init_) {
-    InitImu(msg);
-    return;
-  }
+  if (imu_need_init_) throw std::logic_error("IMU propagation before initialization");
 
   if (!imu_states_.size()) {
     acc_avr = mean_acc_ * kGravityMetersPerSecondSquared / mean_acc_.norm();
@@ -116,46 +111,51 @@ void ImuProcess::Process(const sensor_msgs::msg::Imu::SharedPtr msg) {
   imu_has_data_ = true;
 }
 
-void ImuProcess::InitImu(const sensor_msgs::msg::Imu::SharedPtr msg) {
-  if (b_first_frame_) {
-    init_iter_num_ = 1;
-    b_first_frame_ = false;
-    const auto& imu_acc = msg->linear_acceleration;
-    const auto& gyr_vel = msg->angular_velocity;
-    mean_acc_ << imu_acc.x, imu_acc.y, imu_acc.z;
-    mean_gyr_ << gyr_vel.x, gyr_vel.y, gyr_vel.z;
-  } else {
-    V3D cur_acc, cur_gyr;
-    const auto& imu_acc = msg->linear_acceleration;
-    const auto& gyr_vel = msg->angular_velocity;
-    cur_acc << imu_acc.x, imu_acc.y, imu_acc.z;
-    cur_gyr << gyr_vel.x, gyr_vel.y, gyr_vel.z;
+ellipselio::InitializationDecision::Kind ImuProcess::InitializeBefore(
+    const rclcpp::Time& scan_start) {
+  using ellipselio::InitializationDecision;
+  std::lock_guard<std::mutex> lock(imu_mutex_);
+  if (!imu_need_init_) return InitializationDecision::Initialize;
+  std::vector<int64_t> stamps;
+  stamps.reserve(init_imu_.size());
+  for (const auto& msg : init_imu_) stamps.push_back(rclcpp::Time(msg->header.stamp).nanoseconds());
+  const auto decision = ellipselio::DecideInitialization(stamps, scan_start.nanoseconds(), params_.rate);
+  if (decision.kind != InitializationDecision::Initialize) return decision.kind;
 
-    mean_acc_ += cur_acc;
-    mean_gyr_ += cur_gyr;
-
-    init_iter_num_++;
+  mean_acc_.setZero();
+  mean_gyr_.setZero();
+  for (size_t i = 0; i < decision.averaged; ++i) {
+    const auto& acc = init_imu_[i]->linear_acceleration;
+    const auto& gyr = init_imu_[i]->angular_velocity;
+    mean_acc_ += V3D(acc.x, acc.y, acc.z);
+    mean_gyr_ += V3D(gyr.x, gyr.y, gyr.z);
   }
+  mean_acc_ /= decision.averaged;
+  mean_gyr_ /= decision.averaged;
 
-  if (init_iter_num_ > params_.rate && lidar_ready_) {
-    imu_need_init_ = false;
-    mean_acc_ /= init_iter_num_;
-    mean_gyr_ /= init_iter_num_;
+  kf_state_.time = rclcpp::Time(init_imu_[decision.averaged - 1]->header.stamp);
+  kf_state_.state = kf_->get_x();
+  kf_state_.state.grav =
+      S2(-mean_acc_ / mean_acc_.norm() * kGravityMetersPerSecondSquared);
+  kf_state_.state.bg = mean_gyr_;
+  kf_state_.state.offset_T_L_I = params_.t_imu_lidar;
+  kf_state_.state.offset_R_L_I = params_.r_imu_lidar;
+  kf_->change_x(kf_state_.state);
 
-    kf_state_.time = rclcpp::Time(msg->header.stamp);
+  kf_state_.cov = PCov();
+  kf_->change_P(kf_state_.cov);
+  kf_state_.gyr = mean_gyr_;
+  imu_need_init_ = false;
+  // The remaining samples are propagated in order, ahead of any newer arrivals.
+  pending_imu_.insert(pending_imu_.begin(), init_imu_.begin() + decision.averaged, init_imu_.end());
+  init_imu_.clear();
+  init_imu_.shrink_to_fit();
+  return InitializationDecision::Initialize;
+}
 
-    kf_state_.state = kf_->get_x();
-    kf_state_.state.grav =
-        S2(-mean_acc_ / mean_acc_.norm() * kGravityMetersPerSecondSquared);
-    kf_state_.state.bg = mean_gyr_;
-    kf_state_.state.offset_T_L_I = params_.t_imu_lidar;
-    kf_state_.state.offset_R_L_I = params_.r_imu_lidar;
-    kf_->change_x(kf_state_.state);
-
-    kf_state_.cov = PCov();
-    kf_->change_P(kf_state_.cov);
-    kf_state_.gyr = mean_gyr_;
-  }
+bool ImuProcess::Initialized() {
+  std::lock_guard<std::mutex> lock(imu_mutex_);
+  return !imu_need_init_;
 }
 
 void ImuProcess::SyncWithLidar(rclcpp::Time* imu_start_time,

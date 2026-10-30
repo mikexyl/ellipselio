@@ -58,9 +58,14 @@ struct ImuHistoryRetentionTest {
   static void run() {
     auto node=std::make_shared<rclcpp::Node>("imu_retention_test");
     ImuProcess lazy(filter(),params(),node),eager(filter(),params(),node);
-    lazy.lidar_ready_=eager.lidar_ready_=true;
     lazy.ReleaseHistoryBefore(at(0));
     feed(lazy,0,6000);feed(eager,0,6000,true);  // 12 s delivered before mapping.
+    // The first scan (start 1.201 s) initializes from the 600 samples before
+    // 1.200 s; sample 600 (1.200 s) is the first propagated state.
+    const auto first_start=at(1201000000LL);
+    assert(lazy.InitializeBefore(first_start)==ellipselio::InitializationDecision::Initialize);
+    assert(eager.InitializeBefore(first_start)==ellipselio::InitializationDecision::Initialize);
+    eager.FinishInput();
     assert(!lazy.imu_need_init_ && lazy.imu_states_.empty());
     assert(lazy.Diagnostics().pending_samples>5000 && lazy.Diagnostics().prediction_steps==0);
     rclcpp::Time oldest,newest;
@@ -106,14 +111,15 @@ struct ImuHistoryRetentionTest {
     lazy.FinishInput();
     auto finished=lazy.Diagnostics();
     assert(finished.pending_samples==0);
-    assert(finished.prediction_steps+lazy.init_iter_num_==finished.received_samples);
+    assert(finished.prediction_steps+600==finished.received_samples);
     assert(lazy.imu_states_.back().state.time==at(50000*step));
     lazy.ReleaseHistoryBefore(at(50000*step));assert(lazy.imu_states_.size()==500);
 
     // A scan waiting for future coverage survives late IMU delivery, and
     // materialization stops at its exact original bracket once data arrives.
-    ImuProcess delayed(filter(),params(),node);delayed.lidar_ready_=true;
+    ImuProcess delayed(filter(),params(),node);
     feed(delayed,0,1500);
+    assert(delayed.InitializeBefore(first_start)==ellipselio::InitializationDecision::Initialize);
     const auto start=at(3990000000LL),end=at(4041000000LL);
     delayed.SyncWithLidar(&oldest,&newest,end);
     const auto protected_oldest=oldest;
